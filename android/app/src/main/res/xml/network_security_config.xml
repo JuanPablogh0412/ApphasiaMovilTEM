@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Necesario para que just_audio pueda usar StreamAudioSource en Android.
+    just_audio levanta un servidor HTTP local en 127.0.0.1 para servir fuentes
+    de audio en memoria (p.ej. el clic del metrónomo). Android 9+ bloquea
+    tráfico HTTP en claro (cleartext) por defecto; este archivo lo permite
+    SOLO para localhost, sin afectar la política de seguridad para internet.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

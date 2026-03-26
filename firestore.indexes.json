@@ -1,0 +1,30 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "sesiones_TEM",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pacienteId",  "order": "ASCENDING" },
+        { "fieldPath": "startedAt",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sesiones_TEM",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pacienteId",  "order": "ASCENDING" },
+        { "fieldPath": "status",      "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "exercises",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "reviewed", "order": "ASCENDING" },
+        { "fieldPath": "verbo",    "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

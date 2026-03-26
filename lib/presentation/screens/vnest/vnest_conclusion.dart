@@ -63,9 +63,9 @@ class VnestConclusionScreen extends StatelessWidget {
       s.isEmpty ? s : s[0].toLowerCase() + s.substring(1);
 
   String conjugatePresentIndicative(String sujeto, String verbo) {
-    if (verbo.endsWith("ar")) return verbo.substring(0, verbo.length - 2) + "a";
-    if (verbo.endsWith("er")) return verbo.substring(0, verbo.length - 2) + "e";
-    if (verbo.endsWith("ir")) return verbo.substring(0, verbo.length - 2) + "e";
+    if (verbo.endsWith("ar")) return "${verbo.substring(0, verbo.length - 2)}a";
+    if (verbo.endsWith("er")) return "${verbo.substring(0, verbo.length - 2)}e";
+    if (verbo.endsWith("ir")) return "${verbo.substring(0, verbo.length - 2)}e";
     return verbo;
   }
 

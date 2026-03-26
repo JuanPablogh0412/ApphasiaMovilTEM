@@ -1,0 +1,110 @@
+{
+  "ST_TEM_N1_001": {
+    "id": "ST_TEM_N1_001",
+    "onsets_ms": [
+      0,
+      2090
+    ],
+    "durations_ms": [
+      2080,
+      2090
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_002": {
+    "id": "ST_TEM_N1_002",
+    "onsets_ms": [
+      0,
+      1690
+    ],
+    "durations_ms": [
+      1680,
+      1690
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_003": {
+    "id": "ST_TEM_N1_003",
+    "onsets_ms": [
+      0,
+      2510
+    ],
+    "durations_ms": [
+      2500,
+      2510
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_004": {
+    "id": "ST_TEM_N1_004",
+    "onsets_ms": [
+      0,
+      2340
+    ],
+    "durations_ms": [
+      2340,
+      1840
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_005": {
+    "id": "ST_TEM_N1_005",
+    "onsets_ms": [
+      0,
+      1720,
+      3440
+    ],
+    "durations_ms": [
+      1710,
+      1710,
+      1720
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_006": {
+    "id": "ST_TEM_N1_006",
+    "onsets_ms": [
+      0,
+      830
+    ],
+    "durations_ms": [
+      820,
+      830
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_008": {
+    "id": "ST_TEM_N1_008",
+    "onsets_ms": [
+      1780,
+      2760
+    ],
+    "durations_ms": [
+      970,
+      980
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_009": {
+    "id": "ST_TEM_N1_009",
+    "onsets_ms": [
+      2400,
+      3100
+    ],
+    "durations_ms": [
+      690,
+      700
+    ],
+    "audio_duration_ms": 6250
+  },
+  "ST_TEM_N1_010": {
+    "id": "ST_TEM_N1_010",
+    "onsets_ms": [
+      0
+    ],
+    "durations_ms": [
+      3320
+    ],
+    "audio_duration_ms": 6250
+  }
+}

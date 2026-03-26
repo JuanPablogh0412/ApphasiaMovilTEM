@@ -17,9 +17,9 @@ String capitalize(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(
 String decapitalize(String s) => s.isEmpty ? s : s[0].toLowerCase() + s.substring(1);
 
 String conjugatePresentIndicative(String sujeto, String verbo) {
-  if (verbo.endsWith("ar")) return verbo.substring(0, verbo.length - 2) + "a";
+  if (verbo.endsWith("ar")) return "${verbo.substring(0, verbo.length - 2)}a";
   if (verbo.endsWith("er") || verbo.endsWith("ir")) {
-    return verbo.substring(0, verbo.length - 2) + "e";
+    return "${verbo.substring(0, verbo.length - 2)}e";
   }
   return verbo;
 }
@@ -70,7 +70,7 @@ Widget buildColoredSentence({
           ),
         if (when != null)
           TextSpan(
-            text: "${decapitalize(when)}",
+            text: decapitalize(when),
             style: base(whenCorrect ? Colors.green.shade700 : Colors.red.shade700),
           ),
         TextSpan(text: ".", style: base(Colors.black87)),
@@ -407,7 +407,7 @@ class VnestStepScreen extends StatelessWidget {
   Widget _headerCards(Color accent) {
     final verboConjugado = conjugatePresentIndicative(who, verbo);
 
-    Widget _wordCard(String label, String text, {bool isVerb = false}) {
+    Widget wordCard(String label, String text, {bool isVerb = false}) {
       return Expanded(
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 6),
@@ -455,9 +455,9 @@ class VnestStepScreen extends StatelessWidget {
 
     return Row(
       children: [
-        _wordCard("¿Quién?", capitalize(who)),
-        _wordCard("Verbo", verboConjugado, isVerb: true),
-        _wordCard("¿Qué?", decapitalize(what)),
+        wordCard("¿Quién?", capitalize(who)),
+        wordCard("Verbo", verboConjugado, isVerb: true),
+        wordCard("¿Qué?", decapitalize(what)),
       ],
     );
   }

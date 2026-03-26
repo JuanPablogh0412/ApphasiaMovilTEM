@@ -1,0 +1,11 @@
+{
+  "name": "tem-seed-script",
+  "version": "1.0.0",
+  "description": "Sube estímulos TEM a Firebase Storage y Firestore",
+  "scripts": {
+    "seed": "node seed_stimuli.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}

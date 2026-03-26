@@ -47,6 +47,13 @@ dependencies:
   google_sign_in: ^7.2.0
   shared_preferences: ^2.5.3
 
+  # --- TEM: Terapia de Entonación Melódica ---
+  just_audio: ^0.9.40          # Reproductor WAV con positionStream para sincronización labial
+  audio_session: ^0.1.0        # Configura audio focus para grabación+reproducción simultánea
+  record: ^6.0.0               # Grabación WAV 16kHz / mono / 16-bit
+  firebase_storage: ^13.0.3    # Descargar JSON de estímulos y audio desde Storage
+  path_provider: ^2.1.0        # Directorio temporal para grabaciones WAV
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

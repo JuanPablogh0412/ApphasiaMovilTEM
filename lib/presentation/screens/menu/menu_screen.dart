@@ -12,8 +12,8 @@ class MenuScreen extends StatefulWidget {
 }
 
 class _MenuScreenState extends State<MenuScreen> {
-  final background = const Color(0xFFFFF7F2);   // Fondo suave
-  final orange = const Color(0xFFF48A63);       // Naranja cálido
+  final background = const Color(0xFFFFF7F2); // Fondo suave
+  final orange = const Color(0xFFF48A63); // Naranja cálido
 
   int _currentIndex = 0;
   int completedCount = 0;
@@ -26,36 +26,31 @@ class _MenuScreenState extends State<MenuScreen> {
   }
 
   Future<void> _fetchProgress() async {
-  final registerVM = Provider.of<RegisterViewModel>(context, listen: false);
-  final userId = registerVM.userId;
+    final registerVM = Provider.of<RegisterViewModel>(context, listen: false);
+    final userId = registerVM.userId;
 
-  if (userId == null) {
-    debugPrint("⚠️ [Menu] userId es null, no se puede cargar progreso todavía");
-    return;
+    try {
+      final ref = FirebaseFirestore.instance
+          .collection('pacientes')
+          .doc(userId)
+          .collection('ejercicios_asignados');
+
+      final snap = await ref.get();
+      final completed = snap.docs
+          .where((d) => d['estado'] == 'completado')
+          .toList();
+
+      setState(() {
+        completedCount = completed.length;
+        if (completed.isNotEmpty) {
+          final last = completed.last.data();
+          lastExercise = last['contexto'] ?? '-';
+        }
+      });
+    } catch (e) {
+      debugPrint("❌ [Menu] Error al cargar progreso: $e");
+    }
   }
-
-  try {
-    final ref = FirebaseFirestore.instance
-        .collection('pacientes')
-        .doc(userId)
-        .collection('ejercicios_asignados');
-
-    final snap = await ref.get();
-    final completed =
-        snap.docs.where((d) => d['estado'] == 'completado').toList();
-
-    setState(() {
-      completedCount = completed.length;
-      if (completed.isNotEmpty) {
-        final last = completed.last.data();
-        lastExercise = last['contexto'] ?? '-';
-      }
-    });
-  } catch (e) {
-    debugPrint("❌ [Menu] Error al cargar progreso: $e");
-  }
-}
-
 
   final List<Widget> _pages = [];
 
@@ -63,11 +58,7 @@ class _MenuScreenState extends State<MenuScreen> {
   Widget build(BuildContext context) {
     _pages
       ..clear()
-      ..addAll([
-        _buildTherapies(),
-        _buildPersonalize(),
-        _buildProfile(),
-      ]);
+      ..addAll([_buildTherapies(), _buildPersonalize(), _buildProfile()]);
 
     return Scaffold(
       backgroundColor: background,
@@ -119,10 +110,7 @@ class _MenuScreenState extends State<MenuScreen> {
     return Row(
       children: [
         // Logo Rehabilita
-        Image.asset(
-          'assets/icons/brain_logo.png',
-          height: 32,
-        ),
+        Image.asset('assets/icons/brain_logo.png', height: 32),
         const SizedBox(width: 8),
         Text(
           'RehabilitIA',
@@ -179,10 +167,7 @@ class _MenuScreenState extends State<MenuScreen> {
         const SizedBox(height: 4),
         Text(
           subtitle,
-          style: TextStyle(
-            fontSize: 15,
-            color: Colors.grey.shade600,
-          ),
+          style: TextStyle(fontSize: 15, color: Colors.grey.shade600),
         ),
         const SizedBox(height: 22),
       ],
@@ -219,6 +204,14 @@ class _MenuScreenState extends State<MenuScreen> {
                   "Repite conceptos a intervalos crecientes para reforzar la memoria.",
               icon: Icons.access_time_rounded,
               onTap: () => Navigator.pushNamed(context, '/sr'),
+            ),
+            const SizedBox(height: 20),
+            _therapyCard(
+              title: "Entonación Melódica",
+              description:
+                  "Entona diferentes palabras junto a su pronunciación e imagen para recuperar el habla.",
+              icon: Icons.music_note_rounded,
+              onTap: () => Navigator.pushNamed(context, '/tem-home'),
             ),
           ],
         ),
@@ -286,8 +279,10 @@ class _MenuScreenState extends State<MenuScreen> {
               onPressed: onTap,
               style: ElevatedButton.styleFrom(
                 backgroundColor: orange,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 28,
+                  vertical: 12,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(25),
                 ),
@@ -321,10 +316,7 @@ class _MenuScreenState extends State<MenuScreen> {
           const SizedBox(height: 24),
           const Text(
             "Personaliza tu práctica",
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w800,
-            ),
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 28),
@@ -343,10 +335,7 @@ class _MenuScreenState extends State<MenuScreen> {
           const SizedBox(height: 26),
           const Text(
             "Crea ejercicios a tu medida",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-            ),
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 10),
@@ -413,10 +402,7 @@ class _MenuScreenState extends State<MenuScreen> {
         children: [
           const Text(
             "Progreso de ejercicios",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-            ),
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 20),
           Stack(
@@ -492,7 +478,7 @@ class _MenuScreenState extends State<MenuScreen> {
   // ===================================================
   Future<void> _showLogoutConfirmation(BuildContext context) async {
     final authService = AuthService();
-    
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (BuildContext dialogContext) {
@@ -502,10 +488,7 @@ class _MenuScreenState extends State<MenuScreen> {
           ),
           title: const Text(
             '¿Cerrar sesión?',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 20,
-            ),
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
           ),
           content: const Text(
             '¿Estás seguro de que deseas cerrar sesión?',
@@ -530,7 +513,10 @@ class _MenuScreenState extends State<MenuScreen> {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
               ),
               child: const Text(
                 'Cerrar sesión',
@@ -549,15 +535,10 @@ class _MenuScreenState extends State<MenuScreen> {
     if (confirmed == true) {
       // Clear login state and navigate to landing
       await authService.clearLoginState();
-      
+
       if (context.mounted) {
-        Navigator.pushNamedAndRemoveUntil(
-          context,
-          '/',
-          (route) => false,
-        );
+        Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
       }
     }
   }
 }
-

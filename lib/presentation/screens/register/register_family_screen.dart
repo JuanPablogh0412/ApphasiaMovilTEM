@@ -508,7 +508,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                               ),
                               const SizedBox(height: 10),
                               DropdownButtonFormField<String>(
-                                value: f["tipo_relacion"] ?? parentescos.first,
+                                initialValue: f["tipo_relacion"] ?? parentescos.first,
                                 items: parentescos
                                     .map(
                                       (p) => DropdownMenuItem(

@@ -202,7 +202,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
       final asignadosRef = pacienteRef.collection("ejercicios_asignados");
 
       // ========== Helpers ==========
-      Future<bool> _isPersonalizedForVnestDoc(
+      Future<bool> isPersonalizedForVnestDoc(
           DocumentSnapshot<Map<String, dynamic>> vnDoc) async {
         final data = vnDoc.data() ?? {};
         final generalId = (data['id_ejercicio_general'] ?? '') as String;
@@ -213,7 +213,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
         return (baseData['personalizado'] ?? false) == true;
       }
 
-      int _priorityOf(Map<String, dynamic> a) {
+      int priorityOf(Map<String, dynamic> a) {
         final p = a['prioridad'];
         if (p is int) return p;
         if (p is num) return p.toInt();
@@ -242,7 +242,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
 
         bool personalizado = (m['personalizado'] ?? false) == true;
         if (!personalizado) {
-          personalizado = await _isPersonalizedForVnestDoc(vnDoc);
+          personalizado = await isPersonalizedForVnestDoc(vnDoc);
         }
 
         asignados.add({
@@ -259,7 +259,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
           final ap = (a['_personalizado'] == true) ? 0 : 1;
           final bp = (b['_personalizado'] == true) ? 0 : 1;
           if (ap != bp) return ap - bp;
-          return _priorityOf(a).compareTo(_priorityOf(b));
+          return priorityOf(a).compareTo(priorityOf(b));
         });
 
       if (pendientes.isNotEmpty) {
@@ -286,7 +286,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
       final vnestRevisadosDocs = <DocumentSnapshot<Map<String, dynamic>>>[];
       for (final doc in allVnestSnap.docs) {
         final data = doc.data();
-        final idEjercicioGeneral = data?['id_ejercicio_general']?.toString();
+        final idEjercicioGeneral = data['id_ejercicio_general']?.toString();
         final isRevisado = await _isEjercicioRevisado(idEjercicioGeneral);
         if (isRevisado) {
           vnestRevisadosDocs.add(doc);
@@ -302,14 +302,14 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
       final noAsignadosDocs =
           vnestRevisadosDocs.where((d) => !asignadosIds.contains(d.id)).toList();
 
-      Future<List<DocumentSnapshot<Map<String, dynamic>>>> _sortPersonalizedFirst(
+      Future<List<DocumentSnapshot<Map<String, dynamic>>>> sortPersonalizedFirst(
         List<DocumentSnapshot<Map<String, dynamic>>> docs,
       ) async {
         final withFlag = <Map<String, dynamic>>[];
         for (final d in docs) {
           withFlag.add({
             'doc': d,
-            'personalizado': await _isPersonalizedForVnestDoc(d),
+            'personalizado': await isPersonalizedForVnestDoc(d),
           });
         }
         withFlag.sort((a, b) {
@@ -324,7 +324,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
 
       // 4) Si hay no asignados → personalizados primero
       if (noAsignadosDocs.isNotEmpty) {
-        final ordered = await _sortPersonalizedFirst(noAsignadosDocs);
+        final ordered = await sortPersonalizedFirst(noAsignadosDocs);
 
         final chosenDoc = ordered.first;
         final chosenData = chosenDoc.data() ?? {};
@@ -340,7 +340,7 @@ class _VnestSelectVerbScreenState extends State<VnestSelectVerbScreen> {
         final nextPriority =
             prioridades.isEmpty ? 1 : (prioridades.reduce((a, b) => a > b ? a : b) + 1);
 
-        final personalizedFlag = await _isPersonalizedForVnestDoc(chosenDoc);
+        final personalizedFlag = await isPersonalizedForVnestDoc(chosenDoc);
 
         final existe = await asignadosRef.doc(idEjercicio).get();
         if (!existe.exists) {

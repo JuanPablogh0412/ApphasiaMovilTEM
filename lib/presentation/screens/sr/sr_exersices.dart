@@ -75,7 +75,7 @@ class _SRExercisesScreenState extends State<SRExercisesScreen> {
 
   Future<void> _loadCards() async {
     final userId = Provider.of<RegisterViewModel>(context, listen: false).userId;
-    if (userId == null || userId.isEmpty) {
+    if (userId.isEmpty) {
       setState(() => loading = false);
       return;
     }
@@ -212,7 +212,7 @@ class _SRExercisesScreenState extends State<SRExercisesScreen> {
     if (currentCard == null) return;
     
     final userId = Provider.of<RegisterViewModel>(context, listen: false).userId;
-    if (userId == null || userId.isEmpty) return;
+    if (userId.isEmpty) return;
 
     try {
       final idEjercicioGeneral = currentCard!["id_ejercicio_general"];
