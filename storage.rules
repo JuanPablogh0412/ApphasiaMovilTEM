@@ -1,13 +1,86 @@
 rules_version = '2';
 
-// Reglas de Firebase Storage para RehabilitIA — modo desarrollo.
-// Permite leer y escribir a cualquier usuario autenticado.
-// Sprint 3: restringir por pacienteId cuando se implemente el rol de terapeuta.
-
 service firebase.storage {
   match /b/{bucket}/o {
-    match /{allPaths=**} {
-      allow read, write: if request.auth != null;
+
+    // ══════════════════════════════════════════════════════════
+    //  Funciones auxiliares
+    // ══════════════════════════════════════════════════════════
+    function isSignedIn() {
+      return request.auth != null;
     }
+    function isStaff() {
+      return isSignedIn()
+        && (request.auth.token.role == 'admin'
+         || request.auth.token.role == 'terapeuta');
+    }
+    function isStaffOrCreador() {
+      return isStaff()
+        || (isSignedIn() && request.auth.token.role == 'creador');
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  tem_stimuli/  (imágenes de estímulos subidos desde web)
+    // ══════════════════════════════════════════════════════════
+    match /tem_stimuli/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isStaffOrCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  tem/  (audio y timelines de estímulos de referencia)
+    //  Rutas: tem/audio/*.wav, tem/timelines/*.json
+    // ══════════════════════════════════════════════════════════
+    match /tem/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isStaffOrCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  stimuli/  (estímulos alternativos)
+    // ══════════════════════════════════════════════════════════
+    match /stimuli/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isStaffOrCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  tem_recordings/  (grabaciones de creador desde web)
+    // ══════════════════════════════════════════════════════════
+    match /tem_recordings/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isStaffOrCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  attempts/{pacienteId}/  (grabaciones WAV del paciente)
+    //  Ruta: attempts/{pacienteId}/{sessionId}/{attemptId}.wav
+    //  Solo el paciente dueño puede escribir.
+    // ══════════════════════════════════════════════════════════
+    match /attempts/{pacienteId}/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn()
+                   && request.auth.uid == pacienteId;
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  calibration/{pacienteId}/  (calibración vocal del paciente)
+    //  Ruta: calibration/{pacienteId}/<phase>_<timestamp>.wav
+    //  Solo el paciente dueño puede escribir.
+    // ══════════════════════════════════════════════════════════
+    match /calibration/{pacienteId}/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn()
+                   && request.auth.uid == pacienteId;
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  calibraciones/{pacienteId}/  (backend lee para análisis)
+    // ══════════════════════════════════════════════════════════
+    match /calibraciones/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff();
+    }
+
   }
 }

@@ -16,26 +16,19 @@ import 'stimulus_repository.dart';
 ///      (ej: dos bisílabas LH seguidas → perseveración tonal).
 ///   6. Devolver los primeros [size] de la lista resultante.
 ///
-/// Documentos Firestore creados por [buildSession]:
-/// ┌──────────────────────────────────────────────────────────────┘
-/// ejercicios/{ejercicioId}
-///   creado_por, descripcion_adaptado, fecha_creacion, id, id_paciente,
-///   personalizado, referencia_base, revisado, terapia, tipo
-/// ┌──────────────────────────────────────────────────────────────┘
-/// ejercicios_TEM/{ejercicioId}     ←← mismo patrón que ejercicios_SR
-///   id_ejercicio_general: ejercicioId   (enlace a colección ejercicios)
-///   nivel, estimulosSecuencia, sesion_tem_id, status, startedAt
-/// ┌──────────────────────────────────────────────────────────────┘
-/// sesiones_TEM/{sessionId}         ←← detalle clínico completo
-///   ejercicio_tem_id: ejercicioId,  nivel, estimulosSecuencia, ...
+/// Documento Firestore creado por [buildSession]:
+///   sesiones_TEM/{sessionId}  ← detalle clínico completo
+///     ejercicio_tem_id, pacienteId, nivel, estimulosSecuencia, ...
+///
+/// Los documentos en `ejercicios/` y `ejercicios_TEM/` son creados
+/// automáticamente por una Cloud Function (onSessionCreated) que
+/// escucha `sesiones_TEM/{sessionId}` y usa el SDK de admin.
 ///
 /// Sprint 1 — implementación completa.
+/// Sprint 3 — writes a ejercicios/ y ejercicios_TEM/ movidos a Cloud Function.
 class SessionManager {
   final StimulusRepository repository;
   final _firestore = FirebaseFirestore.instance;
-
-  /// ID del ejercicio general (último creado). Expuesto para [closeSession].
-  String? lastEjercicioId;
 
   /// ID de la sesión TEM (última creada). Expuesto para el ViewModel.
   String? lastSessionId;
@@ -57,8 +50,19 @@ class SessionManager {
     // ---- Regla 1: nivel actual del paciente ----
     final nivel = await repository.getNivelActual(pacienteId);
 
-    // ---- Regla 1: todos los estímulos del nivel ----
-    final allStimuli = await repository.getStimuliForNivel(nivel);
+    // ---- Asignación del terapeuta (si existe, tiene prioridad) ----
+    final asignacion = await repository.getAsignacionActiva(pacienteId);
+
+    // ---- Regla 1: candidatos base ----
+    // Si hay asignación activa, usa solo los estímulos asignados.
+    // Si no, usa todos los estímulos aprobados del nivel del paciente.
+    final List<Map<String, dynamic>> allStimuli;
+    if (asignacion != null) {
+      final assignedIds = List<String>.from(asignacion['estimulosIds'] as List);
+      allStimuli = await repository.getStimuliByIds(assignedIds);
+    } else {
+      allStimuli = await repository.getStimuliForNivel(nivel);
+    }
 
     if (allStimuli.isEmpty) {
       throw StateError(
@@ -109,16 +113,29 @@ class SessionManager {
     });
 
     // ---- Regla 5: anti-perseveración tonal ----
-    final sequence = _applyTonalAntiPerseveration(candidates, size);
+    var sequence = _applyTonalAntiPerseveration(candidates, size);
+
+    // ---- Relleno si la asignación tiene menos de [size] estímulos ----
+    // Complementa con el algoritmo base para mantener el protocolo de 10.
+    if (asignacion != null && sequence.length < size) {
+      final usedIds = sequence.map((s) => s['id'] as String).toSet();
+      final fillPool = await repository.getStimuliForNivel(nivel);
+      final fillCandidates =
+          fillPool.where((s) => !usedIds.contains(s['id'] as String)).toList()
+            ..sort((a, b) {
+              final aC = (a['num_completions'] as int?) ?? 0;
+              final bC = (b['num_completions'] as int?) ?? 0;
+              return aC.compareTo(bC);
+            });
+      sequence = [...sequence, ...fillCandidates.take(size - sequence.length)];
+    }
 
     final stimulusIds = sequence.map((s) => s['id'] as String).toList();
 
-    // ---- Crear documentos en Firestore (batch atómico) ----
-    //
-    // Esquema idéntico al de SR/VNEST:
-    //   ejercicios/{ejercicioId}      ← registro general común a todas las terapias
-    //   ejercicios_TEM/{ejercicioId}  ← dato específico TEM con id_ejercicio_general
-    //   sesiones_TEM/{sessionId}      ← detalle clínico de la sesión
+    // ---- Crear documento en Firestore ----
+    // Solo se crea sesiones_TEM/{sessionId}.
+    // ejercicios/{ejercicioId} y ejercicios_TEM/{ejercicioId} los crea
+    // la Cloud Function onSessionCreated (SDK admin, sin restricciones).
 
     // ID estilo E0A1B2 (6 dígitos hex en mayúscula) igual que SR/VNEST
     final ms = DateTime.now().millisecondsSinceEpoch;
@@ -126,43 +143,9 @@ class SessionManager {
         'E${(ms % 0xFFFFFF).toRadixString(16).toUpperCase().padLeft(6, '0')}';
     final sessionId = 'SES_$ms';
 
-    final batch = _firestore.batch();
-
-    // 1. ejercicios/{ejercicioId} — registro general (igual que SR/VNEST)
-    final ejercicioRef = _firestore.collection('ejercicios').doc(ejercicioId);
-    batch.set(ejercicioRef, {
-      'id': ejercicioId,
-      'creado_por': 'IA',
-      'descripcion_adaptado': '',
-      'fecha_creacion': FieldValue.serverTimestamp(),
-      'id_paciente': pacienteId,
-      'personalizado': true,
-      'referencia_base': null,
-      'revisado': false,
-      'terapia': 'TEM',
-      'tipo': 'privado',
-    });
-
-    // 2. ejercicios_TEM/{ejercicioId} — dato específico (igual que ejercicios_SR)
-    //    id_ejercicio_general apunta al doc de la colección general 'ejercicios'
-    final ejercicioTemRef = _firestore
-        .collection('ejercicios_TEM')
-        .doc(ejercicioId);
-    batch.set(ejercicioTemRef, {
-      'id_ejercicio_general': ejercicioId, // enlace a ejercicios/{ejercicioId}
-      'sesion_tem_id': sessionId, // enlace a sesiones_TEM/{sessionId}
-      'nivel': nivel,
-      'estimulosSecuencia': stimulusIds,
-      'status': 'in_progress',
-      'startedAt': FieldValue.serverTimestamp(),
-      'scoreSesion': null,
-    });
-
-    // 3. sesiones_TEM/{sessionId} — detalle clínico completo
-    final sesionRef = _firestore.collection('sesiones_TEM').doc(sessionId);
-    batch.set(sesionRef, {
+    await _firestore.collection('sesiones_TEM').doc(sessionId).set({
       'sessionId': sessionId,
-      'ejercicio_tem_id': ejercicioId, // enlace a ejercicios_TEM/{ejercicioId}
+      'ejercicio_tem_id': ejercicioId,
       'pacienteId': pacienteId,
       'nivel': nivel,
       'estimulosSecuencia': stimulusIds,
@@ -173,9 +156,6 @@ class SessionManager {
       'status': 'in_progress',
     });
 
-    await batch.commit();
-
-    lastEjercicioId = ejercicioId;
     lastSessionId = sessionId;
     return stimulusIds;
   }
@@ -287,43 +267,18 @@ class SessionManager {
   // Cierre de sesión
   // ------------------------------------------------------------------
 
-  /// Cierra la sesión con el score final. Actualiza en batch:
-  ///   sesiones_TEM/{sessionId}     → status, completedAt, scoreSesion
-  ///   ejercicios_TEM/{ejercicioId} → scoreSesion, status, completedAt
-  ///   ejercicios/{ejercicioId}     → revisado: false (pendiente terapeuta)
+  /// Cierra la sesión con el score final.
+  /// Solo actualiza sesiones_TEM/{sessionId}.
+  /// La Cloud Function onSessionCompleted detecta el cambio de status
+  /// y actualiza ejercicios_TEM/ y ejercicios/ automáticamente.
   Future<void> closeSession({
     required String sessionId,
     required int scoreSesion,
   }) async {
-    // Recuperar ejercicioId desde memoria o desde el doc de sesión
-    final String? ejercicioId =
-        lastEjercicioId ??
-        (await _firestore.collection('sesiones_TEM').doc(sessionId).get())
-                .data()?['ejercicio_tem_id']
-            as String?;
-
-    final batch = _firestore.batch();
-
-    // sesiones_TEM
-    batch.update(_firestore.collection('sesiones_TEM').doc(sessionId), {
+    await _firestore.collection('sesiones_TEM').doc(sessionId).update({
       'status': 'completed',
       'completedAt': FieldValue.serverTimestamp(),
       'scoreSesion': scoreSesion,
     });
-
-    if (ejercicioId != null) {
-      // ejercicios_TEM
-      batch.update(_firestore.collection('ejercicios_TEM').doc(ejercicioId), {
-        'status': 'completed',
-        'scoreSesion': scoreSesion,
-        'completedAt': FieldValue.serverTimestamp(),
-      });
-      // ejercicios (registro general — marca pendiente de revisión)
-      batch.update(_firestore.collection('ejercicios').doc(ejercicioId), {
-        'revisado': false,
-      });
-    }
-
-    await batch.commit();
   }
 }

@@ -1,15 +1,11 @@
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../../data/models/tem/lip_timeline.dart';
 
 /// Repositorio de datos para estímulos TEM.
 /// Accede a Firestore (stimuli_TEM, ejercicios_TEM) y Firebase Storage.
 /// Sprint 1 — implementación completa.
+/// Sprint 2 — adaptado a nuevo formato de estímulos (WebM, video_url, estado).
 class StimulusRepository {
   final _firestore = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
 
   // ------------------------------------------------------------------
   // Ejercicios asignados
@@ -30,8 +26,7 @@ class StimulusRepository {
   // ------------------------------------------------------------------
 
   /// Obtiene los metadatos del estímulo desde `stimuli_TEM/{stimulusId}`.
-  /// Incluye: texto, syllables, onsets_ms, durations_ms, audio_url,
-  /// timeline_url, nivel_clinico, patron_tonal, num_silabas, etc.
+  /// Solo devuelve estímulos con `estado == "aprobado"`.
   Future<Map<String, dynamic>> getStimulus(String stimulusId) async {
     final doc = await _firestore
         .collection('stimuli_TEM')
@@ -40,59 +35,11 @@ class StimulusRepository {
     if (!doc.exists) {
       throw StateError('Estímulo "$stimulusId" no encontrado en stimuli_TEM.');
     }
-    return {'id': doc.id, ...doc.data()!};
-  }
-
-  // ------------------------------------------------------------------
-  // Timeline (JSON de visemas + onsets)
-  // ------------------------------------------------------------------
-
-  /// Descarga el JSON de la timeline desde Firebase Storage y lo
-  /// parsea con [LipTimeline.fromStimulusJson].
-  /// Usa caché local (SharedPreferences) para funcionar sin conexión.
-  Future<LipTimeline> getTimeline(String stimulusId, String timelineUrl) async {
-    // 1. Intentar caché local
-    final cached = await getCachedTimeline(stimulusId);
-    if (cached != null) {
-      return LipTimeline.fromStimulusJson(cached);
+    final data = doc.data()!;
+    if (data['estado'] != 'aprobado') {
+      throw StateError('Estímulo "$stimulusId" no está aprobado.');
     }
-
-    // 2. Descargar desde Firebase Storage
-    final ref = _storage.refFromURL(timelineUrl);
-    final bytes = await ref.getData();
-    if (bytes == null) {
-      throw StateError(
-        'No se pudo descargar la timeline de "$stimulusId" ($timelineUrl).',
-      );
-    }
-    final jsonMap =
-        jsonDecode(String.fromCharCodes(bytes)) as Map<String, dynamic>;
-
-    // 3. Guardar en caché y parsear
-    await cacheTimeline(stimulusId, jsonMap);
-    return LipTimeline.fromStimulusJson(jsonMap);
-  }
-
-  // ------------------------------------------------------------------
-  // Caché local (SharedPreferences)
-  // ------------------------------------------------------------------
-
-  /// Guarda el JSON de la timeline en SharedPreferences para uso offline.
-  Future<void> cacheTimeline(
-    String stimulusId,
-    Map<String, dynamic> json,
-  ) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('tem_timeline_$stimulusId', jsonEncode(json));
-  }
-
-  /// Lee el JSON de la timeline desde SharedPreferences.
-  /// Devuelve `null` si no existe.
-  Future<Map<String, dynamic>?> getCachedTimeline(String stimulusId) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('tem_timeline_$stimulusId');
-    if (raw == null) return null;
-    return jsonDecode(raw) as Map<String, dynamic>;
+    return {'id': doc.id, ...data};
   }
 
   // ------------------------------------------------------------------
@@ -106,7 +53,7 @@ class StimulusRepository {
     return (doc.data()?['nivel_actual'] as int?) ?? 1;
   }
 
-  /// Devuelve los estímulos disponibles para [nivelClinico] desde
+  /// Devuelve los estímulos aprobados para [nivelClinico] desde
   /// la colección `stimuli_TEM`.
   Future<List<Map<String, dynamic>>> getStimuliForNivel(
     int nivelClinico,
@@ -114,6 +61,7 @@ class StimulusRepository {
     final snap = await _firestore
         .collection('stimuli_TEM')
         .where('nivel_clinico', isEqualTo: nivelClinico)
+        .where('estado', isEqualTo: 'aprobado')
         .get();
     return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
@@ -144,5 +92,38 @@ class StimulusRepository {
         .limit(limit)
         .get();
     return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+  }
+
+  // ------------------------------------------------------------------
+  // Asignación del terapeuta
+  // ------------------------------------------------------------------
+
+  /// Devuelve la asignación activa del terapeuta para [pacienteId],
+  /// o null si no existe ninguna.
+  /// Consulta `asignaciones_TEM` donde `pacienteId == uid AND activa == true`.
+  Future<Map<String, dynamic>?> getAsignacionActiva(String pacienteId) async {
+    final snap = await _firestore
+        .collection('asignaciones_TEM')
+        .where('pacienteId', isEqualTo: pacienteId)
+        .where('activa', isEqualTo: true)
+        .limit(1)
+        .get();
+    if (snap.docs.isEmpty) return null;
+    final doc = snap.docs.first;
+    return {'id': doc.id, ...doc.data()};
+  }
+
+  /// Obtiene los metadatos de varios estímulos a partir de sus IDs.
+  /// Omite silenciosamente los IDs que no existan o no estén aprobados.
+  Future<List<Map<String, dynamic>>> getStimuliByIds(List<String> ids) async {
+    final results = <Map<String, dynamic>>[];
+    for (final id in ids) {
+      try {
+        results.add(await getStimulus(id));
+      } catch (_) {
+        // omitir estímulos inexistentes o no aprobados
+      }
+    }
+    return results;
   }
 }

@@ -10,10 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../../viewmodels/tem/tem_session_viewmodel.dart';
-import 'lip_animation/lip_animation_widget.dart';
-import 'lip_animation/lip_timeline.dart';
 import 'syllable_highlight_widget.dart';
 import 'tem_session_summary_screen.dart';
+import 'tem_video_player_widget.dart';
 
 /// Fuente de audio en memoria para el clic del metrónomo.
 ///
@@ -96,6 +95,9 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   /// Paso 4: ¿ya terminó la fase de escucha?
   bool _step4ListenDone = false;
 
+  // ── Video player del estímulo ─────────────────────────────────
+  final _videoPlayerKey = GlobalKey<TemVideoPlayerWidgetState>();
+
   /// El micrófono está abierto.
   bool _isRecording = false;
 
@@ -111,10 +113,13 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   /// Texto de instrucción que sobreescribe al del ViewModel.
   String? _instructionOverride;
 
-  /// URL HTTPS de la imagen del estímulo actual.
+  /// Bytes de la imagen del estímulo actual — sólo móvil (null en web).
+  Uint8List? _resolvedImageBytes;
+
+  /// URL HTTPS de la imagen del estímulo actual — sólo web (null en móvil).
   String? _resolvedImageUrl;
 
-  /// gs:// URL que produjo [_resolvedImageUrl] — para detectar cambios.
+  /// gs:// URL que produjo la imagen resuelta — para detectar cambios.
   String? _lastImageSourceUrl;
 
   // ══════════════════════════════════════════════════════════════════
@@ -163,6 +168,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         debugPrint('[AudioSession] configure error: $e');
       }
       _clickBytes = _generateClickBytes();
+      debugPrint('[INIT] calling _loadAudio + _startCountdown');
       await _loadAudio();
       _startCountdown();
     });
@@ -175,6 +181,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     _cancelClickTimers();
     _metronomePlayer?.dispose();
     _audioPlayer.dispose();
+    // Video player se dispone a sí mismo vía su State.dispose()
     super.dispose();
   }
 
@@ -185,53 +192,99 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   Future<String?> _resolveAudioUrl() async {
     final vm = context.read<TemSessionViewModel>();
     final raw = vm.currentStimulus?['audio_url'] as String?;
+    debugPrint('[AUD] _resolveAudioUrl | raw=$raw');
     if (raw == null || raw.isEmpty) return null;
     try {
+      final sw = Stopwatch()..start();
       if (raw.startsWith('gs://')) {
-        return await FirebaseStorage.instance.refFromURL(raw).getDownloadURL();
+        final url = await FirebaseStorage.instance
+            .refFromURL(raw)
+            .getDownloadURL();
+        debugPrint(
+          '[AUD] resolved in ${sw.elapsedMilliseconds}ms → ${url.substring(0, url.length.clamp(0, 60))}...',
+        );
+        return url;
       }
       return raw;
     } catch (e) {
-      debugPrint('_resolveAudioUrl error: $e');
+      debugPrint('[AUD] _resolveAudioUrl ERROR: $e');
       return null;
     }
   }
 
   Future<void> _loadAudio() async {
+    debugPrint('[AUD] _loadAudio called');
     final url = await _resolveAudioUrl();
-    if (url == null) return;
+    if (url == null) {
+      debugPrint('[AUD] _loadAudio → url is null, bailing');
+      return;
+    }
     try {
+      final sw = Stopwatch()..start();
       await _audioPlayer.setUrl(url);
       _loadedAudioUrl = url;
+      debugPrint('[AUD] _loadAudio setUrl done in ${sw.elapsedMilliseconds}ms');
     } catch (e) {
-      debugPrint('_loadAudio error: $e');
+      debugPrint('[AUD] _loadAudio ERROR: $e');
     }
   }
 
   Future<void> _resolveImageUrl() async {
     final vm = context.read<TemSessionViewModel>();
     final raw = vm.currentStimulus?['imagen_url'] as String?;
-    // Si ya resolvimos esta misma URL fuente, no repetir
-    if (raw == _lastImageSourceUrl && _resolvedImageUrl != null) return;
+    debugPrint(
+      '[IMG] _resolveImageUrl | kIsWeb=$kIsWeb | raw=$raw | lastSource=$_lastImageSourceUrl',
+    );
+
+    // Saltar si ya resolvimos esta misma fuente
+    final alreadyLoaded = kIsWeb
+        ? (raw == _lastImageSourceUrl && _resolvedImageUrl != null)
+        : (raw == _lastImageSourceUrl && _resolvedImageBytes != null);
+    if (alreadyLoaded) {
+      debugPrint('[IMG] same source, skip resolve');
+      return;
+    }
     _lastImageSourceUrl = raw;
     if (raw == null || raw.isEmpty) {
-      if (mounted) setState(() => _resolvedImageUrl = null);
+      debugPrint('[IMG] raw is null/empty');
+      if (mounted)
+        setState(() {
+          _resolvedImageBytes = null;
+          _resolvedImageUrl = null;
+        });
       return;
     }
     try {
-      // Usamos getDownloadURL() (igual que audio) para obtener una URL HTTPS
-      // válida. getData() falla silenciosamente en Flutter Web por CORS.
+      final sw = Stopwatch()..start();
       final ref = raw.startsWith('gs://')
           ? FirebaseStorage.instance.refFromURL(raw)
           : FirebaseStorage.instance.ref(raw);
-      final url = await ref.getDownloadURL();
-      if (mounted) {
-        setState(() => _resolvedImageUrl = url);
-        debugPrint('_resolveImageUrl OK: $url');
+
+      if (kIsWeb) {
+        // Web: URL HTTPS → HtmlElementView renderiza con <img> nativo del browser.
+        // Image.network / Image.memory fallan con AVIF en Chrome vía ImageDecoder API.
+        final url = await ref.getDownloadURL();
+        if (mounted) {
+          setState(() => _resolvedImageUrl = url);
+          debugPrint('[IMG] web URL ready in ${sw.elapsedMilliseconds}ms');
+        }
+      } else {
+        // Móvil: bytes → Image.memory (decodificador nativo maneja AVIF sin problemas).
+        final bytes = await ref.getData();
+        if (mounted) {
+          setState(() => _resolvedImageBytes = bytes);
+          debugPrint(
+            '[IMG] mobile bytes done in ${sw.elapsedMilliseconds}ms | size=${bytes?.length}',
+          );
+        }
       }
     } catch (e) {
-      debugPrint('_resolveImageUrl error: $e');
-      if (mounted) setState(() => _resolvedImageUrl = null);
+      debugPrint('[IMG] _resolveImageUrl ERROR: $e');
+      if (mounted)
+        setState(() {
+          _resolvedImageBytes = null;
+          _resolvedImageUrl = null;
+        });
     }
   }
 
@@ -249,42 +302,77 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   ///
   /// [muteAfterFraction]: si se especifica, silencia el audio cuando la
   /// posición supera esa fracción de la duración total (0.5 = mitad).
+  /// También pausa el video en ese mismo instante.
+  ///
+  /// [fallbackDurationMs]: duración en ms a usar si just_audio no puede
+  /// determinar la duración del audio (frecuente en WebM/Opus streaming).
+  /// Se obtiene del campo `audio_duration_ms` del estímulo.
   Future<void> _playAudioAndWait({
     double volume = 1.0,
     double? muteAfterFraction,
+    int? fallbackDurationMs,
   }) async {
+    debugPrint(
+      '[AUD] _playAudioAndWait START | vol=$volume mute=$muteAfterFraction fallback=$fallbackDurationMs',
+    );
     final url = await _resolveAudioUrl();
-    if (url == null) return;
+    if (url == null) {
+      debugPrint('[AUD] _playAudioAndWait → url null, bailing');
+      return;
+    }
 
     // Resetear a estado idle ANTES de cargar → evita bloqueos en reproduct.
     // consecutivas del mismo URL.
+    debugPrint('[AUD] calling stop() before setUrl');
     await _audioPlayer.stop();
+    debugPrint('[AUD] stop() done | playerState=${_audioPlayer.playerState}');
+    final sw = Stopwatch()..start();
     final loadedDuration = await _audioPlayer.setUrl(url);
+    debugPrint(
+      '[AUD] setUrl done in ${sw.elapsedMilliseconds}ms | loadedDuration=$loadedDuration',
+    );
     _loadedAudioUrl = url;
     await _audioPlayer.setVolume(volume);
+    debugPrint('[AUD] volume set to $volume');
 
     if (!mounted) return;
     final vm = context.read<TemSessionViewModel>();
     _startMetronomeOnPosition(vm.currentStimulus);
 
+    // Iniciar video sincronizado con el audio
+    _videoPlayerKey.currentState?.play();
+
     // Configurar mute parcial (paso 3 — Completion).
     StreamSubscription<Duration>? posSub;
     if (muteAfterFraction != null) {
-      final durMs = (loadedDuration ?? _audioPlayer.duration)?.inMilliseconds;
+      // Intentar obtener duración: player → fallback del estímulo.
+      final durMs =
+          (loadedDuration ?? _audioPlayer.duration)?.inMilliseconds ??
+          fallbackDurationMs;
       if (durMs != null && durMs > 0) {
         final muteAtMs = (durMs * muteAfterFraction).round();
+        debugPrint(
+          '[AUD] mute scheduled at ${muteAtMs}ms '
+          '(total=${durMs}ms, fraction=$muteAfterFraction)',
+        );
         posSub = _audioPlayer.positionStream.listen((pos) {
           if (pos.inMilliseconds >= muteAtMs) {
             _audioPlayer.setVolume(0);
+            // Video sigue corriendo para que el paciente mantenga la guía visual.
             posSub?.cancel();
           }
         });
+      } else {
+        debugPrint(
+          '[AUD] WARNING: could not determine audio duration '
+          '\u2192 muteAfterFraction ignored',
+        );
       }
     }
 
-    final sw = Stopwatch()..start();
+    final swPlay = Stopwatch()..start();
     debugPrint(
-      '[REC-DBG] play() disparado — esperando ProcessingState.completed...',
+      '[AUD] play() fired — waiting for ProcessingState.completed... | playerState=${_audioPlayer.playerState}',
     );
 
     // Disparar reproducción SIN await — play() en Android retorna cuando el
@@ -293,17 +381,26 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
 
     // Esperar explícitamente a que ExoPlayer reporte fin de reproducción.
     try {
-      await _audioPlayer.playerStateStream.firstWhere(
-        (state) => state.processingState == ProcessingState.completed,
-      );
+      await _audioPlayer.playerStateStream.firstWhere((state) {
+        debugPrint(
+          '[AUD] playerState event: playing=${state.playing} processing=${state.processingState}',
+        );
+        return state.processingState == ProcessingState.completed;
+      });
     } on StateError {
+      debugPrint('[AUD] stream closed (player disposed)');
       // Stream cerrado (player disposed) — salir sin error.
     }
 
-    sw.stop();
-    debugPrint('[REC-DBG] audio terminó en ${sw.elapsedMilliseconds}ms');
+    swPlay.stop();
+    debugPrint('[AUD] audio finished in ${swPlay.elapsedMilliseconds}ms');
+
+    // Detener video al terminar audio
+    debugPrint('[AUD] stopping video after audio done');
+    _videoPlayerKey.currentState?.stop();
 
     posSub?.cancel();
+    debugPrint('[AUD] _playAudioAndWait END');
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -621,10 +718,26 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   Future<void> _autoBeginCurrentStep() async {
     if (!mounted) return;
     final vm = context.read<TemSessionViewModel>();
+    debugPrint(
+      '[FLOW] _autoBeginCurrentStep | step=${vm.currentStep} | stimId=${vm.currentStimulus?['id']} | stimTexto=${vm.currentStimulus?['texto']}',
+    );
     // Resolver imagen aquí — después del countdown, el estímulo ya cargó
     await _resolveImageUrl();
     _metronome?.cancel();
     _cancelClickTimers();
+    // Paso 1: esperar hasta 2 s a que el video termine de abrir (evita stutter)
+    if (vm.currentStep == 1) {
+      int ms = 0;
+      while (mounted &&
+          _videoPlayerKey.currentState?.isReady == false &&
+          ms < 2000) {
+        await Future.delayed(const Duration(milliseconds: 50));
+        ms += 50;
+      }
+      debugPrint(
+        '[FLOW] video isReady=${_videoPlayerKey.currentState?.isReady} after ${ms}ms wait',
+      );
+    }
     switch (vm.currentStep) {
       case 1:
         await _runStep1(vm);
@@ -642,34 +755,42 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   // ─── Paso 1 — ESCUCHA: reproduce 2× ─────────────────────────────
 
   Future<void> _runStep1(TemSessionViewModel vm) async {
+    debugPrint('[STEP1] START');
     setState(() {
       _paso1Plays = 0;
       _instructionOverride = null;
     });
 
     // Primera reproducción
+    debugPrint('[STEP1] play #1 starting');
     await _playAudioAndWait();
     if (!mounted) return;
+    debugPrint('[STEP1] play #1 done');
 
     // Segunda reproducción
     setState(() => _paso1Plays = 1);
+    debugPrint('[STEP1] play #2 starting');
     await _playAudioAndWait();
     if (!mounted) return;
+    debugPrint('[STEP1] play #2 done');
 
     setState(() {
       _paso1Plays = 2;
       _waitingForContinue = true;
       _instructionOverride = '¡Listo! Escuchaste el audio';
     });
+    debugPrint('[STEP1] END → waiting for continue');
   }
 
   // ─── Paso 2 — UNÍSONO: 4 repeticiones mic + audio ───────────────
 
   Future<void> _runStep2(TemSessionViewModel vm) async {
+    debugPrint('[STEP2] START');
     final attemptIds = <String>[];
 
     for (int rep = 1; rep <= 4; rep++) {
       if (!mounted) return;
+      debugPrint('[STEP2] rep $rep/4 starting');
       setState(() {
         _currentRepetition = rep;
         _instructionOverride = 'Canta junto al audio ($rep/4)';
@@ -709,6 +830,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
 
   Future<void> _runStep3(TemSessionViewModel vm) async {
     final attemptIds = <String>[];
+    final fbDurMs = (vm.currentStimulus?['audio_duration_ms'] as num?)?.toInt();
 
     for (int rep = 1; rep <= 4; rep++) {
       if (!mounted) return;
@@ -720,7 +842,11 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
       if (rep > 1) await Future.delayed(const Duration(milliseconds: 700));
 
       await _startRec();
-      await _playAudioAndWait(volume: 1.0, muteAfterFraction: 0.5);
+      await _playAudioAndWait(
+        volume: 1.0,
+        muteAfterFraction: 0.5,
+        fallbackDurationMs: fbDurMs,
+      );
       final path = await _stopRec();
 
       if (path != null) {
@@ -843,9 +969,13 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   void _continueOrFinish(TemSessionViewModel vm) {
     if (!mounted) return;
     _metronome?.cancel();
+    debugPrint(
+      '[FLOW] _continueOrFinish | step=${vm.currentStep} | finished=${vm.sessionFinished} | stimId=${vm.currentStimulus?['id']}',
+    );
 
     // Sesión terminada → navegar a resumen
     if (vm.sessionFinished) {
+      debugPrint('[FLOW] session finished → navigating to summary');
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         Navigator.of(context).pushReplacement(
@@ -863,6 +993,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     // Continuar: resetear estado visual y mostrar cuenta regresiva
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
+      debugPrint('[FLOW] postFrame → resetting visual state');
       setState(() {
         _isRecording = false;
         _isEvaluating = false;
@@ -873,15 +1004,22 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         _step4ListenDone = false;
         _instructionOverride = null;
       });
-      // Nuevo estímulo (paso 1): detener audio anterior y cargar el nuevo
+      // Nuevo estímulo (paso 1): detener audio/video anterior y cargar el nuevo
       if (vm.currentStep == 1) {
+        debugPrint('[FLOW] step==1 → clearing old media, loading new audio');
+        debugPrint(
+          '[FLOW] currentStimulus at _loadAudio time: id=${vm.currentStimulus?['id']} texto=${vm.currentStimulus?['texto']}',
+        );
         // Limpiar imagen vieja — se resolverá después del countdown
         // cuando _loadCurrentStimulus() ya haya cargado el nuevo estímulo.
+        _resolvedImageBytes = null;
         _resolvedImageUrl = null;
         _lastImageSourceUrl = null;
+        _videoPlayerKey.currentState?.stop();
         await _audioPlayer.stop();
         await _loadAudio();
       }
+      debugPrint('[FLOW] starting countdown');
       _startCountdown();
     });
   }
@@ -955,16 +1093,13 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
                                 _QuestionCard(stimulus: stimulus),
                                 const SizedBox(height: 16),
                                 // Imagen del estímulo en paso 5
-                                if (_resolvedImageUrl != null)
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: Image.network(
-                                      _resolvedImageUrl!,
-                                      width: 160,
-                                      height: 160,
-                                      fit: BoxFit.contain,
-                                    ),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: _buildStimImage(
+                                    width: 160,
+                                    height: 160,
                                   ),
+                                ),
                                 const SizedBox(height: 20),
                                 _buildActionArea(vm),
                               ],
@@ -1005,10 +1140,10 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
           _InstructionBanner(text: instructionText),
           const SizedBox(height: 16),
 
-          // Animación labial
-          _LipAnimationPanel(
-            stimulus: stimulus,
-            audioPosition: _audioPlayer.positionStream,
+          // Video del estímulo
+          TemVideoPlayerWidget(
+            key: _videoPlayerKey,
+            videoUrl: stimulus?['video_url'] as String?,
           ),
           const SizedBox(height: 12),
 
@@ -1028,16 +1163,10 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
           const SizedBox(height: 16),
 
           // Imagen del estímulo
-          if (_resolvedImageUrl != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Image.network(
-                _resolvedImageUrl!,
-                width: 180,
-                height: 180,
-                fit: BoxFit.contain,
-              ),
-            ),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: _buildStimImage(width: 180, height: 180),
+          ),
 
           const SizedBox(height: 20),
           _buildActionArea(vm),
@@ -1070,12 +1199,12 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // ─── Izquierda: labios ───
+                // ─── Izquierda: video ───
                 Expanded(
                   flex: 3,
-                  child: _LipAnimationPanel(
-                    stimulus: stimulus,
-                    audioPosition: _audioPlayer.positionStream,
+                  child: TemVideoPlayerWidget(
+                    key: _videoPlayerKey,
+                    videoUrl: stimulus?['video_url'] as String?,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1107,15 +1236,14 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
                 const SizedBox(width: 12),
 
                 // ─── Derecha: imagen del estímulo ───
-                if (_resolvedImageUrl != null)
+                if (kIsWeb
+                    ? _resolvedImageUrl != null
+                    : _resolvedImageBytes != null)
                   Expanded(
                     flex: 3,
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
-                      child: Image.network(
-                        _resolvedImageUrl!,
-                        fit: BoxFit.contain,
-                      ),
+                      child: _buildStimImage(),
                     ),
                   ),
               ],
@@ -1124,6 +1252,45 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         ),
       ],
     );
+  }
+
+  /// Renderiza la imagen del est\u00edmulo de forma compatible con la plataforma.
+  ///
+  /// - Web: [HtmlElementView] con un `<img>` nativo del browser, que decodifica
+  ///   AVIF correctamente sin pasar por el [ImageDecoder] API de Flutter Web.
+  /// - M\u00f3vil: [Image.memory] con los bytes descargados prev\u00edamente.
+  Widget _buildStimImage({
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.contain,
+  }) {
+    if (kIsWeb) {
+      if (_resolvedImageUrl == null) return const SizedBox.shrink();
+      final url = _resolvedImageUrl!;
+      return SizedBox(
+        width: width,
+        height: height,
+        child: HtmlElementView.fromTagName(
+          key: ValueKey(url),
+          tagName: 'img',
+          onElementCreated: (el) {
+            final img = el as dynamic;
+            img.src = url;
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.objectFit = fit == BoxFit.cover ? 'cover' : 'contain';
+          },
+        ),
+      );
+    } else {
+      if (_resolvedImageBytes == null) return const SizedBox.shrink();
+      return Image.memory(
+        _resolvedImageBytes!,
+        width: width,
+        height: height,
+        fit: fit,
+      );
+    }
   }
 
   Widget _buildActionArea(TemSessionViewModel vm) {
@@ -1234,98 +1401,6 @@ class _InstructionBanner extends StatelessWidget {
           fontSize: 18,
           fontWeight: FontWeight.w600,
           color: Color(0xFFBF360C),
-        ),
-      ),
-    );
-  }
-}
-
-class _LipAnimationPanel extends StatefulWidget {
-  final Map<String, dynamic>? stimulus;
-  final Stream<Duration> audioPosition;
-
-  const _LipAnimationPanel({
-    required this.stimulus,
-    required this.audioPosition,
-  });
-
-  @override
-  State<_LipAnimationPanel> createState() => _LipAnimationPanelState();
-}
-
-class _LipAnimationPanelState extends State<_LipAnimationPanel> {
-  LipTimeline? _timeline;
-
-  @override
-  void initState() {
-    super.initState();
-    _timeline = _buildTimeline(widget.stimulus);
-  }
-
-  @override
-  void didUpdateWidget(_LipAnimationPanel old) {
-    super.didUpdateWidget(old);
-    if (old.stimulus?['id'] != widget.stimulus?['id']) {
-      setState(() => _timeline = _buildTimeline(widget.stimulus));
-    }
-  }
-
-  LipTimeline? _buildTimeline(Map<String, dynamic>? stim) {
-    if (stim == null) return null;
-    try {
-      final syllables = List<String>.from((stim['syllables'] as List?) ?? []);
-      final onsets = List<int>.from((stim['onsets_ms'] as List?) ?? []);
-      final durations = List<int>.from((stim['durations_ms'] as List?) ?? []);
-      if (syllables.isEmpty ||
-          syllables.length != onsets.length ||
-          syllables.length != durations.length)
-        return null;
-      return LipTimeline.fromStimulusJson({
-        'syllables': syllables,
-        'onsets_ms': onsets,
-        'durations_ms': durations,
-        if (stim['audio_duration_ms'] != null)
-          'audio_duration_ms': stim['audio_duration_ms'],
-      });
-    } catch (e) {
-      debugPrint('_buildTimeline error: $e');
-      return null;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final texto = widget.stimulus?['texto'] as String? ?? 'mama';
-    final tl = _timeline;
-    return Center(
-      child: SizedBox(
-        width: 300,
-        height: 220,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.08),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: tl != null
-                ? LipAnimationWidget.fromTimeline(
-                    timeline: tl,
-                    audioPositionStream: widget.audioPosition,
-                  )
-                : LipAnimationWidget(
-                    text: texto.isEmpty ? 'mama' : texto,
-                    loop: true,
-                    durationPerSyllable: const Duration(milliseconds: 600),
-                  ),
-          ),
         ),
       ),
     );

@@ -1,9 +1,171 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Reglas de desarrollo — restringir antes de producción clínica
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+
+    // ══════════════════════════════════════════════════════════
+    //  Funciones auxiliares
+    // ══════════════════════════════════════════════════════════
+    function isSignedIn() {
+      return request.auth != null;
     }
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.role == 'admin';
+    }
+    function isTerapeuta() {
+      return isSignedIn() && request.auth.token.role == 'terapeuta';
+    }
+    function isCreador() {
+      return isSignedIn() && request.auth.token.role == 'creador';
+    }
+    function isStaff() {
+      return isAdmin() || isTerapeuta();
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  pacientes
+    // ══════════════════════════════════════════════════════════
+    match /pacientes/{pacienteId} {
+      allow read:   if isStaff() || isOwner(pacienteId);
+      allow write:  if isStaff();
+      allow update: if isOwner(pacienteId);
+
+      // ejercicios asignados (terapeuta asigna, paciente lee)
+      match /ejercicios_asignados/{asignacionId} {
+        allow read:  if isStaff() || isOwner(pacienteId);
+        allow write: if isStaff();
+      }
+
+      // calibración vocal (paciente sube desde móvil)
+      match /calibration/{calId} {
+        allow read:  if isStaff() || isOwner(pacienteId);
+        allow write: if isStaff() || isOwner(pacienteId);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  ejercicios  (general — compartida por TEM, SR, VNEST)
+    // ══════════════════════════════════════════════════════════
+    match /ejercicios/{docId} {
+      allow read:   if isSignedIn();
+      allow write:  if isStaff() || isCreador();
+      // Paciente crea su propio ejercicio (móvil TEM: buildSession)
+      allow create: if isSignedIn()
+                    && request.resource.data.id_paciente == request.auth.uid;
+      // Paciente actualiza su propio ejercicio (móvil TEM: closeSession)
+      allow update: if isSignedIn()
+                    && resource.data.id_paciente == request.auth.uid;
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  ejercicios_TEM
+    // ══════════════════════════════════════════════════════════
+    match /ejercicios_TEM/{docId} {
+      allow read:          if isSignedIn();
+      allow write:         if isStaff();
+      allow create, update: if isSignedIn();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  ejercicios_VNEST
+    // ══════════════════════════════════════════════════════════
+    match /ejercicios_VNEST/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  ejercicios_SR
+    // ══════════════════════════════════════════════════════════
+    match /ejercicios_SR/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  stimuli_TEM  (catálogo de estímulos)
+    // ══════════════════════════════════════════════════════════
+    match /stimuli_TEM/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  sesiones_TEM  +  subcollection attempts
+    // ══════════════════════════════════════════════════════════
+    match /sesiones_TEM/{sessionId} {
+      allow read:   if isSignedIn();
+      allow write:  if isStaff();
+      // Paciente crea su propia sesión (móvil TEM: buildSession)
+      allow create: if isSignedIn()
+                    && request.resource.data.pacienteId == request.auth.uid;
+      // Paciente actualiza su propia sesión (progreso, cierre)
+      allow update: if isSignedIn()
+                    && resource.data.pacienteId == request.auth.uid;
+
+      // Intentos de grabación del paciente
+      match /attempts/{attemptId} {
+        allow read:   if isSignedIn();
+        allow write:  if isStaff();
+        allow create: if isSignedIn()
+                      && request.resource.data.pacienteId == request.auth.uid;
+        allow update: if isSignedIn()
+                      && resource.data.pacienteId == request.auth.uid;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  analysis_results_TEM
+    //  Backend Python usa Admin SDK (bypass). Terapeuta override.
+    // ══════════════════════════════════════════════════════════
+    match /analysis_results_TEM/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  terapeutas
+    // ══════════════════════════════════════════════════════════
+    match /terapeutas/{terapeutaId} {
+      allow read:   if isSignedIn();
+      allow write:  if isAdmin();
+      allow update: if isOwner(terapeutaId);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  creadores
+    // ══════════════════════════════════════════════════════════
+    match /creadores/{creadorId} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  solicitudes  (registro terapeuta → admin aprueba)
+    // ══════════════════════════════════════════════════════════
+    match /solicitudes/{solicitudId} {
+      allow read:   if isAdmin();
+      allow create: if isSignedIn();
+      allow update: if isAdmin();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  contextos  (catálogo de categorías)
+    // ══════════════════════════════════════════════════════════
+    match /contextos/{contextoId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  pending_recordings  (puente QR web ↔ móvil para grabación)
+    // ══════════════════════════════════════════════════════════
+    match /pending_recordings/{recordingId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
+    }
+
   }
 }
