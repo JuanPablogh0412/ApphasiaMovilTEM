@@ -62,6 +62,8 @@ class TemVideoPlayerWidgetState extends State<TemVideoPlayerWidget> {
       return;
     }
     _lastSourceUrl = gsUrl;
+    // Marcar no-listo mientras carga el nuevo video
+    if (mounted) setState(() => _ready = false);
 
     try {
       final sw = Stopwatch()..start();
@@ -90,11 +92,10 @@ class TemVideoPlayerWidgetState extends State<TemVideoPlayerWidget> {
   Future<void> play() async {
     debugPrint('[VID] play() called | _ready=$_ready');
     if (!_ready) return;
-    final sw = Stopwatch()..start();
-    await _player.seek(Duration.zero);
-    debugPrint('[VID] seek(0) done in ${sw.elapsedMilliseconds}ms');
+    // No hacemos seek(0) aquí — stop() y _prepareVideo ya dejan el video
+    // en posición cero. Evitamos el retardo del seek para sincronizar con el audio.
     await _player.play();
-    debugPrint('[VID] play() done in ${sw.elapsedMilliseconds}ms');
+    debugPrint('[VID] play() done');
   }
 
   /// Pausa el video.

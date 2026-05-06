@@ -3,6 +3,11 @@ import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 import '../../../data/services/api_service.dart';
+import '../../../services/tem/narration_service.dart';
+import '../../../services/register/register_tts_keys.dart';
+import '../../widgets/guided_tour.dart';
+import '../../widgets/helper_banner.dart';
+import '../../widgets/mute_button.dart';
 import 'register_viewmodel.dart';
 
 class RegisterFamilyScreen extends StatefulWidget {
@@ -25,6 +30,14 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
     'Otro',
   ];
 
+  bool _bannerVisible = true;
+
+  // Clave para el spotlight del botón "Agregar familiar"
+  final GlobalKey _iaCardKey = GlobalKey();
+  final GlobalKey _addFamiliarKey = GlobalKey();
+
+  final NarrationService _narration = NarrationService();
+
   // === SPEECH TO TEXT ===
   late stt.SpeechToText _speech;
   bool _isListening = false;
@@ -38,7 +51,47 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
-    Future.microtask(() async => await _initSpeech());
+    _narration.init();
+    Future.microtask(() async {
+      await _initSpeech();
+      if (mounted) _runTour();
+    });
+  }
+
+  Future<void> _runTour() async {
+    if (!mounted) return;
+    await _narration.speakAndWait(RegisterTtsKeys.step3Intro);
+    if (!mounted) return;
+    await showGuidedTour(
+      context: context,
+      narration: _narration,
+      steps: [
+        GuidedTourStep(
+          key: _iaCardKey,
+          label:
+              'Si tienes ayuda o puedes hacerlo tú,\nhabá aquí y la IA registrará tu familia.',
+          ttsKey: RegisterTtsKeys.step3VoiceOffer,
+        ),
+        GuidedTourStep(
+          key: _addFamiliarKey,
+          label: 'Toca aquí para agregar a cada familiar o persona cercana',
+          ttsKey: RegisterTtsKeys.step3Add,
+        ),
+      ],
+    );
+  }
+
+  @override
+  void deactivate() {
+    _narration.stop();
+    super.deactivate();
+  }
+
+  @override
+  void dispose() {
+    _narration.dispose();
+    _infoIA.dispose();
+    super.dispose();
   }
 
   Future<void> _initSpeech() async {
@@ -102,8 +155,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
     if (text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content:
-              Text("Por favor ingresa o graba información para procesar."),
+          content: Text("Por favor ingresa o graba información para procesar."),
         ),
       );
       return;
@@ -111,36 +163,34 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
 
     setState(() => _isLoading = true);
     try {
-      final response = await apiService.post(
-        "/profile/structure/",
-        {
-          "user_id": userId,
-          "raw_text": text,
-        },
-      );
+      final response = await apiService.post("/profile/structure/", {
+        "user_id": userId,
+        "raw_text": text,
+      });
 
       if (response.statusCode == 200) {
         final data = response.data["structured_profile"] ?? {};
         final familiaData = data["familia"] ?? [];
 
         setState(() {
-          familiares = (familiaData as List<dynamic>).map<Map<String, String>>(
-            (f) {
-              final Map<String, dynamic> item = f as Map<String, dynamic>;
-              return {
-                "nombre": item["nombre"]?.toString() ?? "",
-                "tipo_relacion": item["tipo_relacion"]?.toString() ?? "Otro",
-                "descripcion": item["descripcion"]?.toString() ?? "",
-              };
-            },
-          ).toList();
+          familiares = (familiaData as List<dynamic>).map<Map<String, String>>((
+            f,
+          ) {
+            final Map<String, dynamic> item = f as Map<String, dynamic>;
+            return {
+              "nombre": item["nombre"]?.toString() ?? "",
+              "tipo_relacion": item["tipo_relacion"]?.toString() ?? "Otro",
+              "descripcion": item["descripcion"]?.toString() ?? "",
+            };
+          }).toList();
           _showConfirmation = true;
           editingIndex = null;
         });
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text("Información familiar completada con IA ✅")),
+            content: Text("Información familiar completada con IA ✅"),
+          ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -148,9 +198,9 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error procesando con IA: $e")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error procesando con IA: $e")));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -189,7 +239,8 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                         color: Colors.black87,
                       ),
                     ),
-                    const Spacer(flex: 2),
+                    const Spacer(),
+                    MuteButton(narration: _narration),
                   ],
                 ),
                 const SizedBox(height: 20),
@@ -219,8 +270,18 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                 ),
                 const SizedBox(height: 24),
 
+                // --- Banner familiar ---
+                if (_bannerVisible)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: HelperBanner(
+                      onDismiss: () => setState(() => _bannerVisible = false),
+                    ),
+                  ),
+
                 // --- Sección IA (tarjeta) ---
                 Container(
+                  key: _iaCardKey,
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -261,8 +322,9 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                           Expanded(
                             flex: 2,
                             child: ElevatedButton(
-                              onPressed:
-                                  _isListening ? _stopListening : _startListening,
+                              onPressed: _isListening
+                                  ? _stopListening
+                                  : _startListening,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: _isListening
                                     ? Colors.redAccent
@@ -270,8 +332,9 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(16),
                                 ),
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 20),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 20,
+                                ),
                                 elevation: 0,
                               ),
                               child: Icon(
@@ -308,7 +371,9 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                         onPressed: _isLoading
                             ? null
                             : () => _processWithIA(
-                                _infoIA.text.trim(), registerVM.userId),
+                                _infoIA.text.trim(),
+                                registerVM.userId,
+                              ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFF48A63),
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -398,10 +463,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                         const SizedBox(height: 6),
                         const Text(
                           "Puedes añadirlos manualmente o usar la IA para detectarlos.",
-                          style: TextStyle(
-                            color: Colors.black54,
-                            fontSize: 14,
-                          ),
+                          style: TextStyle(color: Colors.black54, fontSize: 14),
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -508,7 +570,8 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                               ),
                               const SizedBox(height: 10),
                               DropdownButtonFormField<String>(
-                                initialValue: f["tipo_relacion"] ?? parentescos.first,
+                                initialValue:
+                                    f["tipo_relacion"] ?? parentescos.first,
                                 items: parentescos
                                     .map(
                                       (p) => DropdownMenuItem(
@@ -517,8 +580,8 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                                       ),
                                     )
                                     .toList(),
-                                onChanged: (val) =>
-                                    f["tipo_relacion"] = val ?? parentescos.first,
+                                onChanged: (val) => f["tipo_relacion"] =
+                                    val ?? parentescos.first,
                                 decoration: InputDecoration(
                                   labelText: "Parentesco",
                                   filled: true,
@@ -557,26 +620,29 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
 
                 // --- Botón agregar familiar ---
                 Center(
-                  child: ElevatedButton.icon(
-                    onPressed: _agregarFamiliar,
-                    icon: const Icon(Icons.add_rounded, color: Colors.white),
-                    label: const Text(
-                      'Agregar familiar',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+                  child: Container(
+                    key: _addFamiliarKey,
+                    child: ElevatedButton.icon(
+                      onPressed: _agregarFamiliar,
+                      icon: const Icon(Icons.add_rounded, color: Colors.white),
+                      label: const Text(
+                        'Agregar familiar',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFF48A63),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 14,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF48A63),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        elevation: 0,
                       ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      elevation: 0,
                     ),
                   ),
                 ),
@@ -592,8 +658,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                         style: OutlinedButton.styleFrom(
                           backgroundColor: const Color(0xFFE8EBF3),
                           side: BorderSide.none,
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(20),
                           ),
@@ -616,8 +681,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFF48A63),
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 16),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(20),
                           ),

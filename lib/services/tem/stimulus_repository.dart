@@ -126,4 +126,42 @@ class StimulusRepository {
     }
     return results;
   }
+
+  // ------------------------------------------------------------------
+  // Progresión de nivel
+  // ------------------------------------------------------------------
+
+  /// Escribe el nuevo nivel clínico del paciente en `pacientes/{pacienteId}`.
+  Future<void> setNivelActual(String pacienteId, int nivel) async {
+    await _firestore.collection('pacientes').doc(pacienteId).update({
+      'nivel_actual': nivel,
+    });
+  }
+
+  /// Cuenta cuántas de las últimas [maxCheck] sesiones completadas tienen
+  /// un [scorePct] ≥ [threshold]. El conteo se detiene en la primera sesión
+  /// que no cumple el umbral (rachas consecutivas).
+  Future<int> countConsecutiveHighSessions(
+    String pacienteId, {
+    double threshold = 90.0,
+    int maxCheck = 5,
+  }) async {
+    final snap = await _firestore
+        .collection('sesiones_TEM')
+        .where('pacienteId', isEqualTo: pacienteId)
+        .where('status', isEqualTo: 'completed')
+        .orderBy('completedAt', descending: true)
+        .limit(maxCheck)
+        .get();
+    int count = 0;
+    for (final doc in snap.docs) {
+      final pct = (doc.data()['scorePct'] as num?)?.toDouble() ?? 0.0;
+      if (pct >= threshold) {
+        count++;
+      } else {
+        break; // racha interrumpida
+      }
+    }
+    return count;
+  }
 }

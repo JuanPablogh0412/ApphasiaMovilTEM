@@ -90,7 +90,9 @@ class RecordingService {
     required String stepName,
     required int attemptNumber,
   }) async {
-    final attemptId = 'ATT_${sessionId}_${stimulusId}_s${step}_a$attemptNumber';
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final attemptId =
+        'ATT_${sessionId}_${stimulusId}_s${step}_a${attemptNumber}_$ts';
     final storagePath = 'attempts/$pacienteId/$sessionId/$attemptId.wav';
 
     // 1. Subir WAV a Storage

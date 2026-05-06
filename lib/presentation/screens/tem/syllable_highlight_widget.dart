@@ -20,12 +20,16 @@ class SyllableHighlightWidget extends StatefulWidget {
   /// Stream de posición del AudioPlayer (just_audio positionStream).
   final Stream<Duration> audioPosition;
 
+  /// Texto original del estímulo (para detectar límites de palabras).
+  final String? texto;
+
   const SyllableHighlightWidget({
     super.key,
     required this.syllables,
     required this.onsetsMs,
     required this.durationsMs,
     required this.audioPosition,
+    this.texto,
   });
 
   @override
@@ -82,6 +86,9 @@ class _SyllableHighlightWidgetState extends State<SyllableHighlightWidget> {
   Widget build(BuildContext context) {
     if (widget.syllables.isEmpty) return const SizedBox.shrink();
 
+    // Calcular índices donde empieza una nueva palabra
+    final wordBreaks = _computeWordBreaks();
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
@@ -96,42 +103,105 @@ class _SyllableHighlightWidgetState extends State<SyllableHighlightWidget> {
           ),
         ],
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: List.generate(widget.syllables.length, (i) {
-          final isActive = i == _activeIndex;
-          return AnimatedScale(
-            scale: isActive ? 1.2 : 1.0,
-            duration: const Duration(milliseconds: 180),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 2),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(
-                    color: isActive
-                        ? const Color(0xFFF48A63)
-                        : Colors.transparent,
-                    width: 3,
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 16,
+        runSpacing: 8,
+        children: () {
+          // Agrupar sílabas por palabra en Rows; Wrap solo corta entre palabras.
+          final wordWidgets = <Widget>[];
+          final currentWordSylls = <Widget>[];
+
+          void flushWord() {
+            if (currentWordSylls.isNotEmpty) {
+              wordWidgets.add(
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List<Widget>.from(currentWordSylls),
+                ),
+              );
+              currentWordSylls.clear();
+            }
+          }
+
+          for (int i = 0; i < widget.syllables.length; i++) {
+            if (wordBreaks.contains(i)) flushWord();
+
+            final isActive = i == _activeIndex;
+            currentWordSylls.add(
+              AnimatedScale(
+                scale: isActive ? 1.2 : 1.0,
+                duration: const Duration(milliseconds: 180),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 0,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      bottom: BorderSide(
+                        color: isActive
+                            ? const Color(0xFFF48A63)
+                            : Colors.transparent,
+                        width: 3,
+                      ),
+                    ),
+                  ),
+                  child: Text(
+                    widget.syllables[i].toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: isActive
+                          ? const Color(0xFFF48A63)
+                          : const Color(0xFF2D2D2D),
+                      letterSpacing: 0.0,
+                    ),
                   ),
                 ),
               ),
-              child: Text(
-                widget.syllables[i].toUpperCase(),
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: isActive
-                      ? const Color(0xFFF48A63)
-                      : const Color(0xFF2D2D2D),
-                  letterSpacing: 0.0,
-                ),
-              ),
-            ),
-          );
-        }),
+            );
+          }
+          flushWord();
+          return wordWidgets;
+        }(),
       ),
     );
+  }
+
+  /// Calcula los índices de sílabas que inician una nueva palabra
+  /// comparando la concatenación de sílabas contra las palabras del texto.
+  Set<int> _computeWordBreaks() {
+    final texto = widget.texto;
+    if (texto == null || texto.isEmpty) return {};
+
+    final words = texto.trim().split(RegExp(r'\s+'));
+    if (words.length <= 1) return {};
+
+    final breaks = <int>{};
+    int syllIdx = 0;
+
+    for (final word in words) {
+      final normalizedWord = word.toLowerCase().replaceAll(
+        RegExp(r'[^a-záéíóúüñ]'),
+        '',
+      );
+      String accumulated = '';
+      while (syllIdx < widget.syllables.length) {
+        accumulated += widget.syllables[syllIdx].toLowerCase().replaceAll(
+          RegExp(r'[^a-záéíóúüñ]'),
+          '',
+        );
+        syllIdx++;
+        if (accumulated == normalizedWord) break;
+      }
+      // La siguiente sílaba (si existe) inicia una nueva palabra
+      if (syllIdx < widget.syllables.length) {
+        breaks.add(syllIdx);
+      }
+    }
+
+    return breaks;
   }
 }

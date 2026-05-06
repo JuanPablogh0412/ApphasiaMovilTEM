@@ -45,11 +45,12 @@ service firebase.storage {
     }
 
     // ══════════════════════════════════════════════════════════
-    //  tem_recordings/  (grabaciones de creador desde web)
+    //  tem_recordings/  (grabaciones de creador/terapeuta desde web + móvil vía QR anónimo)
+    //  El móvil usa signInAnonymously() → isSignedIn() = true pero sin rol.
     // ══════════════════════════════════════════════════════════
     match /tem_recordings/{allPaths=**} {
       allow read:  if isSignedIn();
-      allow write: if isStaffOrCreador();
+      allow write: if isSignedIn();
     }
 
     // ══════════════════════════════════════════════════════════

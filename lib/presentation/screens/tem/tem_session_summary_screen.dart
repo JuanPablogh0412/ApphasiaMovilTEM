@@ -1,5 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+
+import 'tem_page_header.dart';
 import '../../viewmodels/tem/tem_session_viewmodel.dart';
 
 /// Pantalla: resumen post-sesión TEM.
@@ -16,7 +21,7 @@ import '../../viewmodels/tem/tem_session_viewmodel.dart';
 /// se accede por ruta nominada con [args].
 ///
 /// Sprint 1 — implementación completa.
-class TemSessionSummaryScreen extends StatelessWidget {
+class TemSessionSummaryScreen extends StatefulWidget {
   /// Constructor sin args — accede al ViewModel via Provider.
   const TemSessionSummaryScreen({super.key}) : args = const {};
 
@@ -25,53 +30,74 @@ class TemSessionSummaryScreen extends StatelessWidget {
 
   final Map<String, dynamic> args;
 
+  @override
+  State<TemSessionSummaryScreen> createState() =>
+      _TemSessionSummaryScreenState();
+}
+
+class _TemSessionSummaryScreenState extends State<TemSessionSummaryScreen> {
   static const _bgColor = Color(0xFFFFF7F2);
   static const _accentColor = Color(0xFFF48A63);
 
   @override
+  void initState() {
+    super.initState();
+    HapticFeedback.heavyImpact();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Intentar obtener el ViewModel del árbol de widgets
     final vm = _tryGetViewModel(context);
 
     final completed =
         vm?.completedStimuli ??
-        (args['completed'] as List?)?.cast<String>() ??
+        (widget.args['completed'] as List?)?.cast<String>() ??
         [];
     final abandoned =
         vm?.abandonedStimuli ??
-        (args['abandoned'] as List?)?.cast<String>() ??
+        (widget.args['abandoned'] as List?)?.cast<String>() ??
         [];
-    final score = vm?.sessionScore ?? (args['score'] as int?) ?? 0;
-    final total = vm?.totalStimuli ?? (args['total'] as int?) ?? 0;
+    final score = vm?.sessionScore ?? (widget.args['score'] as int?) ?? 0;
+    final total = vm?.totalStimuli ?? (widget.args['total'] as int?) ?? 0;
+    final maxScore =
+        (vm?.maxScorePerStimulus ??
+            (widget.args['maxScorePerStimulus'] as int?) ??
+            4) *
+        total;
 
     return Scaffold(
       backgroundColor: _bgColor,
-      appBar: AppBar(
-        title: const Text('Resultado de la sesión'),
-        backgroundColor: _accentColor,
-        foregroundColor: Colors.white,
-        automaticallyImplyLeading: false,
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+      body: SafeArea(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _SummaryHeader(score: score, total: total),
-            const SizedBox(height: 24),
-            _StimuliSummary(
-              completed: completed,
-              abandoned: abandoned,
-              total: total,
-            ),
-            const SizedBox(height: 24),
-            _DisclaimerCard(),
-            const SizedBox(height: 36),
-            _HomeButton(
-              onPressed: () => Navigator.of(
-                context,
-              ).pushNamedAndRemoveUntil('/tem-home', (r) => false),
+            const TemPageHeader(title: 'Resultado', showBack: false),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 20,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _SummaryHeader(score: score, maxScore: maxScore),
+                    const SizedBox(height: 24),
+                    _StimuliSummary(
+                      completed: completed,
+                      abandoned: abandoned,
+                      total: total,
+                    ),
+                    const SizedBox(height: 24),
+                    _DisclaimerCard(),
+                    const SizedBox(height: 36),
+                    _HomeButton(
+                      onPressed: () => Navigator.of(
+                        context,
+                      ).pushNamedAndRemoveUntil('/tem-home', (r) => false),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -94,11 +120,12 @@ class TemSessionSummaryScreen extends StatelessWidget {
 
 class _SummaryHeader extends StatelessWidget {
   final int score;
-  final int total;
-  const _SummaryHeader({required this.score, required this.total});
+  final int maxScore;
+  const _SummaryHeader({required this.score, required this.maxScore});
 
   @override
   Widget build(BuildContext context) {
+    final pct = maxScore > 0 ? (score / maxScore * 100).round() : 0;
     return Container(
       padding: const EdgeInsets.all(28),
       decoration: BoxDecoration(
@@ -118,20 +145,22 @@ class _SummaryHeader extends StatelessWidget {
       ),
       child: Column(
         children: [
-          const Icon(Icons.emoji_events_rounded, size: 48, color: Colors.white),
-          const SizedBox(height: 12),
+          const Icon(Icons.emoji_events_rounded, size: 72, color: Colors.white),
+          const SizedBox(height: 16),
           const Text(
             '¡Sesión finalizada!',
             style: TextStyle(
-              fontSize: 22,
+              fontSize: 28,
               fontWeight: FontWeight.bold,
               color: Colors.white,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 16),
+          _CircularScore(score: score, maxScore: maxScore),
+          const SizedBox(height: 12),
           Text(
-            'Score provisional: $score pts',
-            style: const TextStyle(fontSize: 18, color: Colors.white70),
+            '$score / $maxScore pts',
+            style: const TextStyle(fontSize: 22, color: Colors.white),
           ),
         ],
       ),
@@ -169,9 +198,9 @@ class _StimuliSummary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Resumen de estímulos',
+            'Resumen',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 20,
               fontWeight: FontWeight.bold,
               color: Color(0xFF2D2D2D),
             ),
@@ -183,32 +212,26 @@ class _StimuliSummary extends StatelessWidget {
             label: 'Completados',
             value: '${completed.length}/$total',
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           _StatRow(
             icon: Icons.cancel_rounded,
             iconColor: Colors.orange,
             label: 'Abandonados',
             value: '${abandoned.length}',
           ),
-          if (abandoned.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Text(
-              'Estímulos abandonados:',
-              style: TextStyle(fontSize: 13, color: Colors.black54),
-            ),
-            const SizedBox(height: 6),
+          if (completed.isNotEmpty || abandoned.isNotEmpty) ...[
+            const SizedBox(height: 16),
             Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: abandoned
-                  .map(
-                    (id) => Chip(
-                      label: Text(id, style: const TextStyle(fontSize: 12)),
-                      backgroundColor: const Color(0xFFFFF3E0),
-                      side: const BorderSide(color: Color(0xFFFFB74D)),
-                    ),
-                  )
-                  .toList(),
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ...completed.map(
+                  (id) => _StimulusChip(label: id, completed: true),
+                ),
+                ...abandoned.map(
+                  (id) => _StimulusChip(label: id, completed: false),
+                ),
+              ],
             ),
           ],
         ],
@@ -234,14 +257,14 @@ class _StatRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: iconColor, size: 20),
-        const SizedBox(width: 8),
-        Text(label, style: const TextStyle(fontSize: 15)),
+        Icon(icon, color: iconColor, size: 28),
+        const SizedBox(width: 10),
+        Text(label, style: const TextStyle(fontSize: 18)),
         const Spacer(),
         Text(
           value,
           style: const TextStyle(
-            fontSize: 15,
+            fontSize: 18,
             fontWeight: FontWeight.bold,
             color: Color(0xFF2D2D2D),
           ),
@@ -264,14 +287,13 @@ class _DisclaimerCard extends StatelessWidget {
       child: const Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline_rounded, color: Color(0xFFF9A825), size: 22),
-          SizedBox(width: 10),
+          Icon(Icons.info_outline_rounded, color: Color(0xFFF9A825), size: 28),
+          SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Resultado preliminar — requiere validación del terapeuta '
-              'antes de avanzar de nivel.',
+              'Resultado preliminar — validación del terapeuta requerida.',
               style: TextStyle(
-                fontSize: 14,
+                fontSize: 16,
                 color: Color(0xFF795548),
                 height: 1.4,
               ),
@@ -289,19 +311,119 @@ class _HomeButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ElevatedButton.icon(
-      onPressed: onPressed,
-      icon: const Icon(Icons.home_rounded),
-      label: const Text(
-        'Volver al inicio',
-        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+    return SizedBox(
+      height: 64,
+      child: ElevatedButton.icon(
+        onPressed: () {
+          HapticFeedback.mediumImpact();
+          onPressed();
+        },
+        icon: const Icon(Icons.home_rounded, size: 28),
+        label: const Text(
+          'Volver al inicio',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFF48A63),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          elevation: 4,
+        ),
       ),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFFF48A63),
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        elevation: 4,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Circular score indicator
+// ---------------------------------------------------------------------------
+
+class _CircularScore extends StatelessWidget {
+  final int score;
+  final int maxScore;
+  const _CircularScore({required this.score, required this.maxScore});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = maxScore > 0 ? score / maxScore : 0.0;
+    return SizedBox(
+      width: 100,
+      height: 100,
+      child: CustomPaint(
+        painter: _CircularScorePainter(pct),
+        child: Center(
+          child: Text(
+            '${(pct * 100).round()}%',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CircularScorePainter extends CustomPainter {
+  final double fraction;
+  _CircularScorePainter(this.fraction);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 4;
+    final bgPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..color = Colors.white24;
+    final fgPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white;
+    canvas.drawCircle(center, radius, bgPaint);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2,
+      2 * math.pi * fraction,
+      false,
+      fgPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CircularScorePainter old) =>
+      old.fraction != fraction;
+}
+
+// ---------------------------------------------------------------------------
+// Stimulus chip with ✓/✗
+// ---------------------------------------------------------------------------
+
+class _StimulusChip extends StatelessWidget {
+  final String label;
+  final bool completed;
+  const _StimulusChip({required this.label, required this.completed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      avatar: Icon(
+        completed ? Icons.check_circle : Icons.cancel,
+        size: 20,
+        color: completed ? Colors.green : Colors.orange,
+      ),
+      label: Text(label, style: const TextStyle(fontSize: 14)),
+      backgroundColor: completed
+          ? const Color(0xFFE8F5E9)
+          : const Color(0xFFFFF3E0),
+      side: BorderSide(
+        color: completed ? Colors.green.shade300 : const Color(0xFFFFB74D),
       ),
     );
   }

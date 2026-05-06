@@ -5,6 +5,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:aphasia_mobile/presentation/screens/register/register_viewmodel.dart';
 import 'package:aphasia_mobile/data/services/api_service.dart';
 import 'package:aphasia_mobile/services/auth_service.dart';
+import 'package:aphasia_mobile/services/tem/narration_service.dart';
+import 'package:aphasia_mobile/services/register/register_tts_keys.dart';
+import 'package:aphasia_mobile/presentation/widgets/guided_tour.dart';
+import 'package:aphasia_mobile/presentation/widgets/helper_banner.dart';
 
 class RegisterSummaryScreen extends StatefulWidget {
   const RegisterSummaryScreen({super.key});
@@ -15,7 +19,47 @@ class RegisterSummaryScreen extends StatefulWidget {
 
 class _RegisterSummaryScreenState extends State<RegisterSummaryScreen> {
   bool _isLoading = false;
+  bool _bannerVisible = true;
+
+  final GlobalKey _finalizarKey = GlobalKey();
+  final NarrationService _narration = NarrationService();
   final ApiService apiService = ApiService();
+
+  @override
+  void initState() {
+    super.initState();
+    _narration.init();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runTour());
+  }
+
+  Future<void> _runTour() async {
+    if (!mounted) return;
+    await _narration.speakAndWait(RegisterTtsKeys.step5Intro);
+    if (!mounted) return;
+    await showGuidedTour(
+      context: context,
+      narration: _narration,
+      steps: [
+        GuidedTourStep(
+          key: _finalizarKey,
+          label: 'Cuando estés listo, toca Finalizar registro',
+          ttsKey: RegisterTtsKeys.step5Confirm,
+        ),
+      ],
+    );
+  }
+
+  @override
+  void deactivate() {
+    _narration.stop();
+    super.deactivate();
+  }
+
+  @override
+  void dispose() {
+    _narration.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,10 +96,25 @@ class _RegisterSummaryScreenState extends State<RegisterSummaryScreen> {
                       color: Colors.black87,
                     ),
                   ),
-                  const Spacer(flex: 2),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.volume_up_rounded),
+                    color: const Color(0xFFF48A63),
+                    onPressed: _runTour,
+                    tooltip: 'Repetir explicación',
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
+
+              // Banner familiar (dismissible)
+              if (_bannerVisible)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: HelperBanner(
+                    onDismiss: () => setState(() => _bannerVisible = false),
+                  ),
+                ),
 
               Text(
                 "Por favor verifica que tus datos estén correctos antes de finalizar el registro:",
@@ -76,9 +135,18 @@ class _RegisterSummaryScreenState extends State<RegisterSummaryScreen> {
                       title: "🧍 Datos personales",
                       children: [
                         _buildRow("Nombre", data["nombre"]),
-                        _buildRow("Fecha de nacimiento", data["fecha_nacimiento"]),
-                        _buildRow("Lugar de nacimiento", data["lugar_nacimiento"]),
-                        _buildRow("Ciudad de residencia", data["ciudad_residencia"]),
+                        _buildRow(
+                          "Fecha de nacimiento",
+                          data["fecha_nacimiento"],
+                        ),
+                        _buildRow(
+                          "Lugar de nacimiento",
+                          data["lugar_nacimiento"],
+                        ),
+                        _buildRow(
+                          "Ciudad de residencia",
+                          data["ciudad_residencia"],
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -128,93 +196,104 @@ class _RegisterSummaryScreenState extends State<RegisterSummaryScreen> {
               const SizedBox(height: 20),
 
               // --- Botón Finalizar ---
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _isLoading
-                      ? null
-                      : () async {
-                          setState(() => _isLoading = true);
+              Container(
+                key: _finalizarKey,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading
+                        ? null
+                        : () async {
+                            setState(() => _isLoading = true);
 
-                          try {
-                            // 1️⃣ Crear usuario en FirebaseAuth
-                            final userCredential =
-                                await auth.createUserWithEmailAndPassword(
-                              email: registerVM.email.trim(),
-                              password: registerVM.password.trim(),
-                            );
-                            final user = userCredential.user!;
-                            registerVM.setUserId(user.uid);
-
-                            // 2️⃣ Guardar paciente en Firestore
-                            data.remove("password");
-                            data["uid"] = user.uid;
-                            await firestore
-                                .collection("pacientes")
-                                .doc(user.uid)
-                                .set(data);
-
-                            debugPrint("✅ Paciente registrado en Firestore");
-
-                            // 3️⃣ Crear ejercicios SR en backend
                             try {
-                              final response = await apiService.post(
-                                "/spaced-retrieval/",
-                                {"user_id": user.uid, "profile": data},
+                              // 1️⃣ Crear usuario en FirebaseAuth
+                              final userCredential = await auth
+                                  .createUserWithEmailAndPassword(
+                                    email: registerVM.email.trim(),
+                                    password: registerVM.password.trim(),
+                                  );
+                              final user = userCredential.user!;
+                              registerVM.setUserId(user.uid);
+
+                              // 2️⃣ Guardar paciente en Firestore
+                              data.remove("password");
+                              data["uid"] = user.uid;
+                              await firestore
+                                  .collection("pacientes")
+                                  .doc(user.uid)
+                                  .set(data);
+
+                              debugPrint("✅ Paciente registrado en Firestore");
+
+                              // 3️⃣ Crear ejercicios SR en backend
+                              try {
+                                final response = await apiService.post(
+                                  "/spaced-retrieval/",
+                                  {"user_id": user.uid, "profile": data},
+                                );
+                                if (response.statusCode == 200) {
+                                  debugPrint(
+                                    "✅ SR cards creadas correctamente",
+                                  );
+                                } else {
+                                  debugPrint(
+                                    "⚠️ Backend respondió con ${response.statusCode}",
+                                  );
+                                }
+                              } catch (e) {
+                                debugPrint("❌ Error al crear SR: $e");
+                              }
+
+                              // 4️⃣ Guardar login persistente
+                              final authService = AuthService();
+                              await authService.saveLoginState(
+                                user.uid,
+                                registerVM.userEmail,
                               );
-                              if (response.statusCode == 200) {
-                                debugPrint("✅ SR cards creadas correctamente");
-                              } else {
-                                debugPrint(
-                                  "⚠️ Backend respondió con ${response.statusCode}",
+
+                              // 5️⃣ Navegar y limpiar todo el stack (ATRÁS -> sale de la app)
+                              if (mounted) {
+                                Navigator.pushNamedAndRemoveUntil(
+                                  context,
+                                  '/menu',
+                                  (route) => false,
                                 );
                               }
                             } catch (e) {
-                              debugPrint("❌ Error al crear SR: $e");
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text("Error: $e")),
+                              );
+                            } finally {
+                              setState(() => _isLoading = false);
                             }
-
-                            // 4️⃣ Guardar login persistente
-                            final authService = AuthService();
-                            await authService.saveLoginState(user.uid, registerVM.userEmail);
-
-                            // 5️⃣ Navegar y limpiar todo el stack (ATRÁS -> sale de la app)
-                            if (mounted) {
-                              Navigator.pushNamedAndRemoveUntil(context, '/menu', (route) => false);
-                            }
-
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text("Error: $e")),
-                            );
-                          } finally {
-                            setState(() => _isLoading = false);
-                          }
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFF48A63),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFF48A63),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      elevation: 0,
                     ),
-                    elevation: 0,
+                    child: _isLoading
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                            ),
+                          )
+                        : const Text(
+                            "Finalizar registro",
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
                   ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
-                        )
-                      : const Text(
-                          "Finalizar registro",
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
                 ),
               ),
             ],
@@ -278,10 +357,7 @@ class _RegisterSummaryScreenState extends State<RegisterSummaryScreen> {
           const SizedBox(width: 8),
           Text(
             value ?? "-",
-            style: const TextStyle(
-              color: Colors.black54,
-              fontSize: 14,
-            ),
+            style: const TextStyle(color: Colors.black54, fontSize: 14),
           ),
         ],
       ),

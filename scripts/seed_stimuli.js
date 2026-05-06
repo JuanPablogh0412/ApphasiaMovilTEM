@@ -349,7 +349,7 @@ async function main() {
       num_completions:     0,
       fallos_consecutivos: 0,
       categoria:           stim.categoria,
-      pregunta_texto:      stim.pregunta_texto,
+      pregunta:            stim.pregunta_texto,
       imagen_url:          '',
     };
 

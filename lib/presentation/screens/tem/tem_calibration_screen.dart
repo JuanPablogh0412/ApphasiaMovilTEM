@@ -7,8 +7,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../../services/tem/narration_service.dart';
+import '../../widgets/mute_button.dart';
+import 'tem_page_header.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Modelo de cada fase de calibración
@@ -21,6 +27,7 @@ class _CalibPhase {
   final IconData icon;
   final Color color;
   final int durationSec;
+  final String ttsKey;
 
   const _CalibPhase({
     required this.id,
@@ -29,6 +36,7 @@ class _CalibPhase {
     required this.icon,
     required this.color,
     this.durationSec = 5,
+    required this.ttsKey,
   });
 }
 
@@ -39,6 +47,7 @@ const _phases = [
     instruction: 'Mantén el sonido "Aaaa" con tu voz natural.',
     icon: Icons.record_voice_over,
     color: Color(0xFFF48A63),
+    ttsKey: 'calib_fase_a',
   ),
   _CalibPhase(
     id: 'vowel_i',
@@ -46,6 +55,7 @@ const _phases = [
     instruction: 'Ahora mantén el sonido "Iiiii" sin forzar.',
     icon: Icons.record_voice_over,
     color: Color(0xFF64B5F6),
+    ttsKey: 'calib_fase_i',
   ),
   _CalibPhase(
     id: 'vowel_u',
@@ -53,6 +63,7 @@ const _phases = [
     instruction: 'Mantén el sonido "Uuuu" de forma relajada.',
     icon: Icons.record_voice_over,
     color: Color(0xFF81C784),
+    ttsKey: 'calib_fase_u',
   ),
   _CalibPhase(
     id: 'glide',
@@ -60,6 +71,7 @@ const _phases = [
     instruction: 'Di "Aaaa" empezando grave y subiendo poco a poco.',
     icon: Icons.trending_up,
     color: Color(0xFFBA68C8),
+    ttsKey: 'calib_fase_glide',
   ),
 ];
 
@@ -82,7 +94,8 @@ const _phases = [
 /// Solo el **último** archivo lleva `is_last: true` para que la
 /// Cloud Function `on_calibration_finalized` procese el conjunto.
 class TemCalibrationScreen extends StatefulWidget {
-  const TemCalibrationScreen({super.key});
+  final NarrationService? narration;
+  const TemCalibrationScreen({super.key, this.narration});
 
   @override
   State<TemCalibrationScreen> createState() => _TemCalibrationScreenState();
@@ -90,6 +103,7 @@ class TemCalibrationScreen extends StatefulWidget {
 
 enum _ScreenStep {
   instructions,
+  readyToRecord,
   recording,
   uploading,
   phaseDone,
@@ -112,6 +126,31 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
 
   _CalibPhase get _currentPhase => _phases[_phaseIndex];
   bool get _isLastPhase => _phaseIndex == _phases.length - 1;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      widget.narration?.speak('calib_intro');
+      final prefs = await SharedPreferences.getInstance();
+      final seen = prefs.getBool('tem_calib_tutorial_seen') ?? false;
+      if (!seen && mounted) _showTutorial(markSeen: true);
+    });
+  }
+
+  void _showTutorial({bool markSeen = false}) {
+    if (markSeen) {
+      SharedPreferences.getInstance().then(
+        (p) => p.setBool('tem_calib_tutorial_seen', true),
+      );
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _CalibTutorialSheet(narration: widget.narration),
+    );
+  }
 
   @override
   void dispose() {
@@ -152,6 +191,7 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
 
   Future<void> _beginPhase() async {
     if (!await _ensureReady()) return;
+    HapticFeedback.mediumImpact();
 
     String localPath;
     if (kIsWeb) {
@@ -232,6 +272,8 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
       }
 
       if (!mounted) return;
+      HapticFeedback.heavyImpact();
+      if (_isLastPhase) widget.narration?.speak('calib_listo');
       setState(() {
         _step = _isLastPhase ? _ScreenStep.allDone : _ScreenStep.phaseDone;
       });
@@ -240,12 +282,14 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
     }
   }
 
+  void _toReadyToRecord() {
+    setState(() => _step = _ScreenStep.readyToRecord);
+    widget.narration?.speak(_currentPhase.ttsKey);
+  }
+
   void _nextPhase() {
-    setState(() {
-      _phaseIndex++;
-      _step = _ScreenStep.recording; // will start in _beginPhase
-    });
-    _beginPhase();
+    setState(() => _phaseIndex++);
+    _toReadyToRecord();
   }
 
   void _restart() {
@@ -264,16 +308,22 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _bgColor,
-      appBar: AppBar(
-        title: const Text('Calibración de voz'),
-        backgroundColor: _accentColor,
-        foregroundColor: Colors.white,
-        elevation: 0,
-      ),
       body: SafeArea(
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 350),
-          child: _buildBody(),
+        child: Column(
+          children: [
+            TemPageHeader(
+              title: 'Calibración de voz',
+              trailing: widget.narration != null
+                  ? MuteButton(narration: widget.narration!)
+                  : null,
+            ),
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 350),
+                child: _buildBody(),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -284,7 +334,16 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
       case _ScreenStep.instructions:
         return _InstructionsView(
           key: const ValueKey('instr'),
-          onStart: _beginPhase,
+          onStart: _toReadyToRecord,
+          onShowTutorial: _showTutorial,
+        );
+      case _ScreenStep.readyToRecord:
+        return _ReadyToRecordView(
+          key: ValueKey('ready_$_phaseIndex'),
+          phase: _currentPhase,
+          phaseIndex: _phaseIndex,
+          totalPhases: _phases.length,
+          onRecord: _beginPhase,
         );
       case _ScreenStep.recording:
         return _RecordingPhaseView(
@@ -323,204 +382,263 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
 
 class _InstructionsView extends StatelessWidget {
   final VoidCallback onStart;
-  const _InstructionsView({super.key, required this.onStart});
+  final VoidCallback onShowTutorial;
+
+  const _InstructionsView({
+    super.key,
+    required this.onStart,
+    required this.onShowTutorial,
+  });
+
+  static const _accentColor = Color(0xFFF48A63);
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
       child: Column(
         children: [
+          const Spacer(flex: 1),
+
+          // Ícono grande
+          Container(
+            width: 112,
+            height: 112,
+            decoration: BoxDecoration(
+              color: _accentColor.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.mic_rounded, size: 60, color: _accentColor),
+          ),
+          const SizedBox(height: 24),
+
+          // Título
           const Text(
-            'Preparemos tu calibración',
+            'Calibración de voz',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 22,
+              fontSize: 32,
               fontFamily: 'Manrope',
               fontWeight: FontWeight.w800,
-              color: Color(0xFFF48A63),
+              color: _accentColor,
             ),
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Vamos a grabar 4 sonidos cortos para conocer tu voz.\nSigue estas indicaciones antes de empezar:',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 14,
-              fontFamily: 'Manrope',
-              color: Colors.black54,
-            ),
+          const SizedBox(height: 20),
+
+          // Chips informativos
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              _CalibInfoChip(
+                icon: Icons.format_list_numbered_rounded,
+                label: '4 sonidos',
+              ),
+              SizedBox(width: 16),
+              _CalibInfoChip(icon: Icons.timer_rounded, label: '~2 min'),
+            ],
           ),
           const SizedBox(height: 28),
 
-          // Instrucción 1 — Posición del celular
-          _InstructionTile(
-            icon: Icons.smartphone,
-            color: const Color(0xFFF48A63),
-            title: 'Sostén el celular a la altura del pecho',
-            subtitle: 'A unos 20-30 cm de tu boca, sin tapar el micrófono.',
-          ),
-          const SizedBox(height: 16),
-
-          // Instrucción 2 — Ambiente tranquilo
-          _InstructionTile(
-            icon: Icons.volume_off,
-            color: const Color(0xFF64B5F6),
-            title: 'Busca un lugar silencioso',
-            subtitle:
-                'Apaga la TV o la música. El ruido afecta la calibración.',
-          ),
-          const SizedBox(height: 16),
-
-          // Instrucción 3 — Relajarse
-          _InstructionTile(
-            icon: Icons.self_improvement,
-            color: const Color(0xFF81C784),
-            title: 'Relájate y respira',
-            subtitle:
-                'No necesitas forzar la voz. Usa tu tono natural y cómodo.',
-          ),
-          const SizedBox(height: 16),
-
-          // Instrucción 4 — Qué vamos a hacer
-          _InstructionTile(
-            icon: Icons.format_list_numbered,
-            color: const Color(0xFFBA68C8),
-            title: 'Grabaremos 4 sonidos',
-            subtitle:
-                'Vocal "Aaaa", vocal "Iiiii", vocal "Uuuu" y un "Aaaa" subiendo de tono. Cada uno dura solo 5 segundos.',
+          // Botón tutorial
+          OutlinedButton.icon(
+            onPressed: onShowTutorial,
+            icon: const Icon(Icons.help_outline_rounded, size: 26),
+            label: const Text(
+              '¿Cómo funciona?',
+              style: TextStyle(
+                fontSize: 18,
+                fontFamily: 'Manrope',
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _accentColor,
+              side: const BorderSide(color: _accentColor, width: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+            ),
           ),
 
-          const SizedBox(height: 36),
+          const Spacer(flex: 2),
 
-          // Vista previa de las fases
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: List.generate(_phases.length, (i) {
-              final p = _phases[i];
-              return Column(
-                children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: p.color.withOpacity(0.15),
-                    child: Text(
-                      '${i + 1}',
-                      style: TextStyle(
-                        fontFamily: 'Manrope',
-                        fontWeight: FontWeight.w800,
-                        color: p.color,
-                        fontSize: 18,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    p.vowelDisplay,
-                    style: TextStyle(
-                      fontFamily: 'Manrope',
-                      fontWeight: FontWeight.w700,
-                      color: p.color,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              );
-            }),
-          ),
-
-          const SizedBox(height: 36),
-
+          // Botón COMENZAR
           SizedBox(
-            width: 200,
-            height: 52,
+            width: double.infinity,
+            height: 72,
             child: ElevatedButton.icon(
               onPressed: onStart,
-              icon: const Icon(Icons.mic),
+              icon: const Icon(Icons.arrow_forward_rounded, size: 36),
               label: const Text(
-                'Comenzar',
+                'COMENZAR',
                 style: TextStyle(
-                  fontSize: 17,
+                  fontSize: 24,
                   fontFamily: 'Manrope',
                   fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
                 ),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF48A63),
+                backgroundColor: _accentColor,
                 foregroundColor: Colors.white,
+                elevation: 6,
+                shadowColor: _accentColor.withOpacity(0.4),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(15),
+                  borderRadius: BorderRadius.circular(24),
                 ),
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
         ],
       ),
     );
   }
 }
 
-class _InstructionTile extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String subtitle;
+// ═══════════════════════════════════════════════════════════════════════════
+// Widget auxiliar — Chip informativo
+// ═══════════════════════════════════════════════════════════════════════════
 
-  const _InstructionTile({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.subtitle,
-  });
+class _CalibInfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _CalibInfoChip({required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: color.withOpacity(0.12),
-            child: Icon(icon, color: color, size: 26),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontFamily: 'Manrope',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                    color: Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontFamily: 'Manrope',
-                    fontSize: 12,
-                    color: Colors.black45,
-                  ),
-                ),
-              ],
+          Icon(icon, size: 22, color: const Color(0xFFF48A63)),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 16,
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF2D2D2D),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Vista 1b — Listo para grabar (estado intermedio)
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _ReadyToRecordView extends StatelessWidget {
+  final _CalibPhase phase;
+  final int phaseIndex;
+  final int totalPhases;
+  final VoidCallback onRecord;
+
+  const _ReadyToRecordView({
+    super.key,
+    required this.phase,
+    required this.phaseIndex,
+    required this.totalPhases,
+    required this.onRecord,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Column(
+        children: [
+          _PhaseProgressBar(current: phaseIndex, total: totalPhases),
+          const SizedBox(height: 16),
+          Text(
+            'Sonido ${phaseIndex + 1} de $totalPhases',
+            style: const TextStyle(
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+              color: Colors.black45,
+            ),
+          ),
+          const Spacer(),
+
+          // Vocal grande
+          Text(
+            phase.vowelDisplay,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w800,
+              fontSize: 72,
+              color: phase.color,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            phase.instruction,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontFamily: 'Manrope',
+              fontSize: 18,
+              color: Colors.black54,
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Cuando estés listo, presiona el botón para grabar',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: 'Manrope',
+              fontSize: 16,
+              color: Colors.black38,
+            ),
+          ),
+
+          const Spacer(),
+
+          SizedBox(
+            width: double.infinity,
+            height: 72,
+            child: ElevatedButton.icon(
+              onPressed: onRecord,
+              icon: const Icon(Icons.fiber_manual_record_rounded, size: 28),
+              label: const Text(
+                'GRABAR',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontFamily: 'Manrope',
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF48A63),
+                foregroundColor: Colors.white,
+                elevation: 6,
+                shadowColor: const Color(0xFFF48A63),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
         ],
       ),
     );
@@ -572,7 +690,7 @@ class _RecordingPhaseView extends StatelessWidget {
             style: TextStyle(
               fontFamily: 'Manrope',
               fontWeight: FontWeight.w800,
-              fontSize: 56,
+              fontSize: 64,
               color: phase.color,
             ),
           ),
@@ -590,14 +708,14 @@ class _RecordingPhaseView extends StatelessWidget {
           const Spacer(),
 
           // Icono micrófono pulsante
-          Icon(Icons.mic, size: 64, color: Colors.red.shade400),
+          Icon(Icons.mic, size: 96, color: Colors.red.shade400),
           const SizedBox(height: 12),
           Text(
             '$countdown',
             style: TextStyle(
               fontFamily: 'Manrope',
               fontWeight: FontWeight.w800,
-              fontSize: 56,
+              fontSize: 72,
               color: Colors.red.shade400,
             ),
           ),
@@ -680,15 +798,15 @@ class _PhaseDoneView extends StatelessWidget {
           ),
           const Spacer(),
           SizedBox(
-            width: 200,
-            height: 52,
+            width: 240,
+            height: 64,
             child: ElevatedButton.icon(
               onPressed: onNext,
-              icon: const Icon(Icons.arrow_forward),
+              icon: const Icon(Icons.arrow_forward, size: 28),
               label: const Text(
-                'Siguiente',
+                'Continuar',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 20,
                   fontFamily: 'Manrope',
                   fontWeight: FontWeight.w800,
                 ),
@@ -724,13 +842,13 @@ class _AllDoneView extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.celebration, size: 80, color: Colors.green),
-          const SizedBox(height: 16),
+          const Icon(Icons.celebration, size: 96, color: Colors.green),
+          const SizedBox(height: 20),
           const Text(
             '¡Calibración completa!',
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 22,
+              fontSize: 28,
               fontFamily: 'Manrope',
               fontWeight: FontWeight.w800,
               color: Colors.green,
@@ -895,6 +1013,197 @@ class _UploadingView extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tutorial — Bottom sheet con las 4 fases
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _CalibTutorialSheet extends StatefulWidget {
+  final NarrationService? narration;
+  const _CalibTutorialSheet({this.narration});
+
+  @override
+  State<_CalibTutorialSheet> createState() => _CalibTutorialSheetState();
+}
+
+class _CalibTutorialSheetState extends State<_CalibTutorialSheet> {
+  final _controller = PageController();
+  int _page = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _goToPage(int page) {
+    _controller.animateToPage(
+      page,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.62,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 48,
+            height: 5,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            '¿Cómo funciona?',
+            style: TextStyle(
+              fontSize: 22,
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF2D2D2D),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: PageView.builder(
+              controller: _controller,
+              itemCount: _phases.length,
+              onPageChanged: (i) {
+                setState(() => _page = i);
+                widget.narration?.speak(_phases[i].ttsKey);
+              },
+              itemBuilder: (_, i) => _buildPage(i),
+            ),
+          ),
+
+          // Indicadores de página
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(
+                _phases.length,
+                (i) => AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: i == _page ? 28 : 10,
+                  height: 10,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: i == _page ? _phases[i].color : Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Botones de navegación
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+            child: Row(
+              children: [
+                if (_page > 0)
+                  IconButton(
+                    onPressed: () => _goToPage(_page - 1),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 32),
+                    color: Colors.black45,
+                  )
+                else
+                  const SizedBox(width: 48),
+                const Spacer(),
+                if (_page < _phases.length - 1)
+                  ElevatedButton.icon(
+                    onPressed: () => _goToPage(_page + 1),
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                    label: const Text(
+                      'Siguiente',
+                      style: TextStyle(fontFamily: 'Manrope'),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _phases[_page].color,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  )
+                else
+                  ElevatedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.check_rounded),
+                    label: const Text(
+                      '¡Entendido!',
+                      style: TextStyle(fontFamily: 'Manrope'),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF81C784),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPage(int index) {
+    final phase = _phases[index];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 96,
+            height: 96,
+            decoration: BoxDecoration(
+              color: phase.color.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(phase.icon, size: 48, color: phase.color),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'Sonido ${index + 1}: ${phase.vowelDisplay}',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 28,
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w800,
+              color: phase.color,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            phase.instruction,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 18,
+              fontFamily: 'Manrope',
+              fontWeight: FontWeight.w400,
+              color: Color(0xFF555555),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

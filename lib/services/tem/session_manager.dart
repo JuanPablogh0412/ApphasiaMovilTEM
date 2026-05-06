@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'stimulus_repository.dart';
 
 /// Servicio que construye la secuencia de estímulos de cada sesión TEM
@@ -54,13 +55,23 @@ class SessionManager {
     final asignacion = await repository.getAsignacionActiva(pacienteId);
 
     // ---- Regla 1: candidatos base ----
-    // Si hay asignación activa, usa solo los estímulos asignados.
-    // Si no, usa todos los estímulos aprobados del nivel del paciente.
-    final List<Map<String, dynamic>> allStimuli;
+    // Si hay asignación activa, usa solo los estímulos asignados cuyo
+    // nivel_clinico coincida con el nivel actual del paciente.
+    // Si no quedan estímulos (asignación de otro nivel o inexistente),
+    // cae al pool general del nivel.
+    List<Map<String, dynamic>> allStimuli;
     if (asignacion != null) {
       final assignedIds = List<String>.from(asignacion['estimulosIds'] as List);
-      allStimuli = await repository.getStimuliByIds(assignedIds);
+      final raw = await repository.getStimuliByIds(assignedIds);
+      allStimuli = raw
+          .where((s) => (s['nivel_clinico'] as int?) == nivel)
+          .toList();
     } else {
+      allStimuli = [];
+    }
+    // Fallback: si la asignación no tiene estímulos del nivel actual,
+    // usar el pool general para ese nivel.
+    if (allStimuli.isEmpty) {
       allStimuli = await repository.getStimuliForNivel(nivel);
     }
 
@@ -70,8 +81,8 @@ class SessionManager {
       );
     }
 
-    // ---- Regla 2: excluir intentados en las últimas 24 h ----
-    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+    // ---- Regla 2: excluir intentados en los últimos 7 días ----
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
     final recentSessions = await repository.getSessionsSince(
       pacienteId,
       cutoff,
@@ -244,6 +255,16 @@ class SessionManager {
       'estimuloActualIndex': currentIndex + 1,
       'completedStimuli': FieldValue.arrayUnion([stimulusId]),
     });
+
+    // Actualizar contadores del estímulo en stimuli_TEM
+    _firestore
+        .collection('stimuli_TEM')
+        .doc(stimulusId)
+        .update({
+          'num_completions': FieldValue.increment(1),
+          'fallos_consecutivos': 0,
+        })
+        .catchError((e) => debugPrint('stimuli counter error: $e'));
   }
 
   /// Marca el estímulo como abandonado (4 intentos fallidos) y avanza el índice.
@@ -261,6 +282,13 @@ class SessionManager {
       'estimuloActualIndex': currentIndex + 1,
       'abandonedStimuli': FieldValue.arrayUnion([stimulusId]),
     });
+
+    // Actualizar contador de fallos del estímulo en stimuli_TEM
+    _firestore
+        .collection('stimuli_TEM')
+        .doc(stimulusId)
+        .update({'fallos_consecutivos': FieldValue.increment(1)})
+        .catchError((e) => debugPrint('stimuli counter error: $e'));
   }
 
   // ------------------------------------------------------------------
@@ -270,15 +298,21 @@ class SessionManager {
   /// Cierra la sesión con el score final.
   /// Solo actualiza sesiones_TEM/{sessionId}.
   /// La Cloud Function onSessionCompleted detecta el cambio de status
-  /// y actualiza ejercicios_TEM/ y ejercicios/ automáticamente.
+  /// y evalúa progresión (avance automático de nivel si ≥90% en 5 consecutivas).
   Future<void> closeSession({
     required String sessionId,
     required int scoreSesion,
+    required int maxScoreSesion,
   }) async {
+    final scorePct = maxScoreSesion > 0
+        ? (scoreSesion / maxScoreSesion * 100).roundToDouble()
+        : 0.0;
     await _firestore.collection('sesiones_TEM').doc(sessionId).update({
       'status': 'completed',
       'completedAt': FieldValue.serverTimestamp(),
       'scoreSesion': scoreSesion,
+      'maxScoreSesion': maxScoreSesion,
+      'scorePct': scorePct,
     });
   }
 }

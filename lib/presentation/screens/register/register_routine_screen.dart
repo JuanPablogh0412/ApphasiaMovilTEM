@@ -3,6 +3,11 @@ import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 import '../../../data/services/api_service.dart';
+import '../../../services/tem/narration_service.dart';
+import '../../../services/register/register_tts_keys.dart';
+import '../../widgets/guided_tour.dart';
+import '../../widgets/mute_button.dart';
+import '../../widgets/helper_banner.dart';
 import '../register/register_viewmodel.dart';
 
 class RegisterRoutineScreen extends StatefulWidget {
@@ -19,6 +24,14 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   bool _isLoading = false;
   bool _showConfirmation = false;
   bool _isListening = false;
+  bool _bannerVisible = true;
+
+  // Claves para el spotlight del tour
+  final GlobalKey _iaCardKey = GlobalKey();
+  final GlobalKey _rutinaKey = GlobalKey();
+  final GlobalKey _objetoKey = GlobalKey();
+
+  final NarrationService _narration = NarrationService();
 
   List<Map<String, String>> rutinas = [];
   List<Map<String, String>> objetos = [];
@@ -32,7 +45,53 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
-    Future.microtask(() async => await _initSpeech());
+    _narration.init();
+    Future.microtask(() async => await _initSpeech()).then((_) {
+      if (mounted) _runTour();
+    });
+  }
+
+  Future<void> _runTour() async {
+    if (!mounted) return;
+    await _narration.speakAndWait(RegisterTtsKeys.step4Intro);
+    if (!mounted) return;
+    await showGuidedTour(
+      context: context,
+      narration: _narration,
+      steps: [
+        GuidedTourStep(
+          key: _iaCardKey,
+          label:
+              'Si puedes, habá aquí y la IA\nregistrará tus rutinas y objetos.',
+          ttsKey: RegisterTtsKeys.step4VoiceOffer,
+        ),
+        GuidedTourStep(
+          key: _rutinaKey,
+          label:
+              'Aquí puedes agregar tus rutinas diarias\n(levantarte, comer, caminar...)',
+          ttsKey: RegisterTtsKeys.step4Rutinas,
+        ),
+        GuidedTourStep(
+          key: _objetoKey,
+          label:
+              'Aquí puedes agregar objetos importantes para ti\n(teléfono, sillón, taza...)',
+          ttsKey: RegisterTtsKeys.step4Objetos,
+        ),
+      ],
+    );
+  }
+
+  @override
+  void deactivate() {
+    _narration.stop();
+    super.deactivate();
+  }
+
+  @override
+  void dispose() {
+    _narration.dispose();
+    _infoIA.dispose();
+    super.dispose();
   }
 
   Future<void> _initSpeech() async {
@@ -80,13 +139,10 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
 
     setState(() => _isLoading = true);
     try {
-      final response = await apiService.post(
-        "/profile/structure/",
-        {
-          "user_id": userId,
-          "raw_text": text,
-        },
-      );
+      final response = await apiService.post("/profile/structure/", {
+        "user_id": userId,
+        "raw_text": text,
+      });
 
       if (response.statusCode == 200) {
         final data = response.data["structured_profile"] ?? {};
@@ -94,7 +150,9 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
         final objetosData = data["objetos"] ?? [];
 
         setState(() {
-          rutinas = (rutinasData as List<dynamic>).map<Map<String, String>>((r) {
+          rutinas = (rutinasData as List<dynamic>).map<Map<String, String>>((
+            r,
+          ) {
             final Map<String, dynamic> item = r as Map<String, dynamic>;
             return {
               "titulo": item["titulo"]?.toString() ?? "",
@@ -102,7 +160,9 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
             };
           }).toList();
 
-          objetos = (objetosData as List<dynamic>).map<Map<String, String>>((o) {
+          objetos = (objetosData as List<dynamic>).map<Map<String, String>>((
+            o,
+          ) {
             final Map<String, dynamic> item = o as Map<String, dynamic>;
             return {
               "nombre": item["nombre"]?.toString() ?? "",
@@ -125,9 +185,9 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error procesando con IA: $e")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error procesando con IA: $e")));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -193,12 +253,13 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                       color: Colors.black87,
                     ),
                   ),
-                  const Spacer(flex: 2),
+                  const Spacer(),
+                  MuteButton(narration: _narration),
                 ],
               ),
               const SizedBox(height: 20),
 
-              // --- Icono central (igual estilo que familia, otro ícono) ---
+              // --- Icono central ---
               Center(
                 child: Container(
                   width: 90,
@@ -221,10 +282,20 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+
+              // --- Banner familiar ---
+              if (_bannerVisible)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: HelperBanner(
+                    onDismiss: () => setState(() => _bannerVisible = false),
+                  ),
+                ),
 
               // --- Sección IA (tarjeta) ---
               Container(
+                key: _iaCardKey,
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -265,7 +336,9 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                         Expanded(
                           flex: 2,
                           child: ElevatedButton(
-                            onPressed: _isListening ? _stopListening : _startListening,
+                            onPressed: _isListening
+                                ? _stopListening
+                                : _startListening,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: _isListening
                                   ? Colors.redAccent
@@ -277,7 +350,9 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                               elevation: 0,
                             ),
                             child: Icon(
-                              _isListening ? Icons.stop_rounded : Icons.mic_rounded,
+                              _isListening
+                                  ? Icons.stop_rounded
+                                  : Icons.mic_rounded,
                               size: 26,
                               color: Colors.white,
                             ),
@@ -306,8 +381,10 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                     ElevatedButton(
                       onPressed: _isLoading
                           ? null
-                          : () =>
-                              _processWithIA(_infoIA.text.trim(), registerVM.userId),
+                          : () => _processWithIA(
+                              _infoIA.text.trim(),
+                              registerVM.userId,
+                            ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFF48A63),
                         padding: const EdgeInsets.symmetric(vertical: 14),
@@ -376,35 +453,41 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
               const SizedBox(height: 16),
 
               // --- Rutinas ---
-              _buildEditableList(
-                title: "Rutinas",
-                items: rutinas,
-                editingIndex: editingRutinaIndex,
-                onAdd: _agregarRutina,
-                onDelete: _eliminarRutina,
-                onEdit: (i) {
-                  setState(() {
-                    editingRutinaIndex = editingRutinaIndex == i ? null : i;
-                  });
-                },
-                isRutina: true,
+              Container(
+                key: _rutinaKey,
+                child: _buildEditableList(
+                  title: "Rutinas",
+                  items: rutinas,
+                  editingIndex: editingRutinaIndex,
+                  onAdd: _agregarRutina,
+                  onDelete: _eliminarRutina,
+                  onEdit: (i) {
+                    setState(() {
+                      editingRutinaIndex = editingRutinaIndex == i ? null : i;
+                    });
+                  },
+                  isRutina: true,
+                ),
               ),
 
               const SizedBox(height: 24),
 
               // --- Objetos ---
-              _buildEditableList(
-                title: "Objetos",
-                items: objetos,
-                editingIndex: editingObjetoIndex,
-                onAdd: _agregarObjeto,
-                onDelete: _eliminarObjeto,
-                onEdit: (i) {
-                  setState(() {
-                    editingObjetoIndex = editingObjetoIndex == i ? null : i;
-                  });
-                },
-                isRutina: false,
+              Container(
+                key: _objetoKey,
+                child: _buildEditableList(
+                  title: "Objetos",
+                  items: objetos,
+                  editingIndex: editingObjetoIndex,
+                  onAdd: _agregarObjeto,
+                  onDelete: _eliminarObjeto,
+                  onEdit: (i) {
+                    setState(() {
+                      editingObjetoIndex = editingObjetoIndex == i ? null : i;
+                    });
+                  },
+                  isRutina: false,
+                ),
               ),
 
               const SizedBox(height: 20),
@@ -492,10 +575,7 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
           children: [
             Text(
               title,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             TextButton.icon(
               onPressed: onAdd,
@@ -573,11 +653,11 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
                           child: Text(
                             isRutina
                                 ? (item["titulo"]?.isNotEmpty == true
-                                    ? item["titulo"]!
-                                    : "Sin título")
+                                      ? item["titulo"]!
+                                      : "Sin título")
                                 : (item["nombre"]?.isNotEmpty == true
-                                    ? item["nombre"]!
-                                    : "Sin nombre"),
+                                      ? item["nombre"]!
+                                      : "Sin nombre"),
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,

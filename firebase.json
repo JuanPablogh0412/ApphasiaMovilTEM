@@ -28,5 +28,19 @@
         }
       }
     }
+  },
+  "hosting": {
+    "public": "C:\\Users\\JUANG\\OneDrive - Pontificia Universidad Javeriana\\Documents\\Universidad\\8 semestre\\Tesis\\RepoAndes\\Mobile-App-RehabilitIA\\build\\web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
   }
 }

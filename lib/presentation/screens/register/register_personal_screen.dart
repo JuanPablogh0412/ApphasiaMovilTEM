@@ -5,6 +5,11 @@ import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 import '../../../data/services/api_service.dart';
+import '../../../services/tem/narration_service.dart';
+import '../../../services/register/register_tts_keys.dart';
+import '../../widgets/guided_tour.dart';
+import '../../widgets/helper_banner.dart';
+import '../../widgets/mute_button.dart';
 
 class RegisterPersonalScreen extends StatefulWidget {
   const RegisterPersonalScreen({super.key});
@@ -23,6 +28,16 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
 
   final ApiService apiService = ApiService();
   bool _isLoading = false;
+  bool _bannerVisible = true;
+
+  // Claves para el spotlight del tour
+  final GlobalKey _iaCardKey = GlobalKey();
+  final GlobalKey _nombreKey = GlobalKey();
+  final GlobalKey _fechaKey = GlobalKey();
+  final GlobalKey _lugarKey = GlobalKey();
+  final GlobalKey _ciudadKey = GlobalKey();
+
+  final NarrationService _narration = NarrationService();
 
   late stt.SpeechToText _speech;
   bool _isListening = false;
@@ -32,9 +47,66 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
+    _narration.init();
     Future.microtask(() async {
       await _initSpeech();
+      if (mounted) _runTour();
     });
+  }
+
+  Future<void> _runTour() async {
+    if (!mounted) return;
+    await _narration.speakAndWait(RegisterTtsKeys.step2Intro);
+    if (!mounted) return;
+    await showGuidedTour(
+      context: context,
+      narration: _narration,
+      steps: [
+        GuidedTourStep(
+          key: _iaCardKey,
+          label:
+              'Si tienes ayuda o puedes hacerlo tú,\nhabá aquí y la IA llenará los campos.',
+          ttsKey: RegisterTtsKeys.step2VoiceOffer,
+        ),
+        GuidedTourStep(
+          key: _nombreKey,
+          label: 'Escribe aquí tu nombre completo',
+          ttsKey: RegisterTtsKeys.step2Name,
+        ),
+        GuidedTourStep(
+          key: _fechaKey,
+          label: 'Toca aquí para seleccionar tu fecha de nacimiento',
+          ttsKey: RegisterTtsKeys.step2Birthdate,
+        ),
+        GuidedTourStep(
+          key: _lugarKey,
+          label: 'Escribe la ciudad donde naciste',
+          ttsKey: RegisterTtsKeys.step2BirthCity,
+        ),
+        GuidedTourStep(
+          key: _ciudadKey,
+          label: 'Escribe la ciudad donde vives actualmente',
+          ttsKey: RegisterTtsKeys.step2City,
+        ),
+      ],
+    );
+  }
+
+  @override
+  void deactivate() {
+    _narration.stop();
+    super.deactivate();
+  }
+
+  @override
+  void dispose() {
+    _narration.dispose();
+    _nombreCtrl.dispose();
+    _fechaCtrl.dispose();
+    _lugarCtrl.dispose();
+    _ciudadCtrl.dispose();
+    _infoIA.dispose();
+    super.dispose();
   }
 
   Future<void> _initSpeech() async {
@@ -102,13 +174,10 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final response = await apiService.post(
-        "/profile/structure/",
-        {
-          "user_id": userId,
-          "raw_text": text,
-        },
-      );
+      final response = await apiService.post("/profile/structure/", {
+        "user_id": userId,
+        "raw_text": text,
+      });
 
       if (response.statusCode == 200) {
         final data = response.data["structured_profile"] ?? {};
@@ -130,9 +199,9 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error procesando con IA: $e")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error procesando con IA: $e")));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -143,7 +212,7 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
     final registerVM = Provider.of<RegisterViewModel>(context, listen: false);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFFF7F2), 
+      backgroundColor: const Color(0xFFFFF7F2),
       body: SafeArea(
         child: SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
@@ -169,7 +238,8 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                         color: Colors.black87,
                       ),
                     ),
-                    const Spacer(flex: 2),
+                    const Spacer(),
+                    MuteButton(narration: _narration),
                   ],
                 ),
                 const SizedBox(height: 20),
@@ -201,6 +271,7 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
 
                 // --- Tarjeta IA, más "card" y suave ---
                 Container(
+                  key: _iaCardKey,
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -241,8 +312,9 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                         children: [
                           // --- Botón mic ---
                           ElevatedButton(
-                            onPressed:
-                                _isListening ? _stopListening : _startListening,
+                            onPressed: _isListening
+                                ? _stopListening
+                                : _startListening,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: _isListening
                                   ? Colors.redAccent
@@ -287,9 +359,9 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                         onPressed: _isLoading
                             ? null
                             : () => _processWithIA(
-                                  _infoIA.text.trim(),
-                                  registerVM.userId,
-                                ),
+                                _infoIA.text.trim(),
+                                registerVM.userId,
+                              ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFF48A63),
                           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -320,6 +392,15 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                 ),
                 const SizedBox(height: 24),
 
+                // --- Banner familiar ---
+                if (_bannerVisible)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: HelperBanner(
+                      onDismiss: () => setState(() => _bannerVisible = false),
+                    ),
+                  ),
+
                 // --- Divider ---
                 const Row(
                   children: [
@@ -328,10 +409,7 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                       padding: EdgeInsets.symmetric(horizontal: 8),
                       child: Text(
                         'O rellena manualmente',
-                        style: TextStyle(
-                          color: Colors.black54,
-                          fontSize: 13,
-                        ),
+                        style: TextStyle(color: Colors.black54, fontSize: 13),
                       ),
                     ),
                     Expanded(child: Divider(thickness: 1)),
@@ -349,22 +427,26 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
                         label: 'Nombre completo',
                         controller: _nombreCtrl,
                         placeholder: 'Introduce tu nombre completo',
+                        fieldKey: _nombreKey,
                       ),
                       _buildDateField(
                         label: 'Fecha de nacimiento',
                         controller: _fechaCtrl,
                         placeholder: 'DD/MM/AAAA',
                         onTap: () => _selectDate(context),
+                        fieldKey: _fechaKey,
                       ),
                       _buildInputField(
                         label: 'Lugar de nacimiento',
                         controller: _lugarCtrl,
                         placeholder: 'Ej: Madrid, España',
+                        fieldKey: _lugarKey,
                       ),
                       _buildInputField(
                         label: 'Ciudad de residencia',
                         controller: _ciudadCtrl,
                         placeholder: 'Ej: Bogotá, Colombia',
+                        fieldKey: _ciudadKey,
                       ),
                     ],
                   ),
@@ -439,23 +521,28 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
     required String label,
     required TextEditingController controller,
     required String placeholder,
+    Key? fieldKey,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: TextFormField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          hintText: placeholder,
-          filled: true,
-          fillColor: const Color(0xFFE8EBF3),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: BorderSide.none,
+      child: Container(
+        key: fieldKey,
+        child: TextFormField(
+          controller: controller,
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: placeholder,
+            filled: true,
+            fillColor: const Color(0xFFE8EBF3),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
           ),
+          validator: (value) => value == null || value.isEmpty
+              ? 'Este campo es obligatorio'
+              : null,
         ),
-        validator: (value) =>
-            value == null || value.isEmpty ? 'Este campo es obligatorio' : null,
       ),
     );
   }
@@ -465,29 +552,33 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
     required TextEditingController controller,
     required String placeholder,
     required VoidCallback onTap,
+    Key? fieldKey,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
-      child: TextFormField(
-        controller: controller,
-        readOnly: true,
-        onTap: onTap,
-        decoration: InputDecoration(
-          labelText: label,
-          hintText: placeholder,
-          filled: true,
-          fillColor: const Color(0xFFE8EBF3),
-          suffixIcon: const Icon(
-            Icons.calendar_today,
-            color: Color(0xFFF48A63),
+      child: Container(
+        key: fieldKey,
+        child: TextFormField(
+          controller: controller,
+          readOnly: true,
+          onTap: onTap,
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: placeholder,
+            filled: true,
+            fillColor: const Color(0xFFE8EBF3),
+            suffixIcon: const Icon(
+              Icons.calendar_today,
+              color: Color(0xFFF48A63),
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
           ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: BorderSide.none,
-          ),
+          validator: (value) =>
+              value == null || value.isEmpty ? 'Selecciona una fecha' : null,
         ),
-        validator: (value) =>
-            value == null || value.isEmpty ? 'Selecciona una fecha' : null,
       ),
     );
   }

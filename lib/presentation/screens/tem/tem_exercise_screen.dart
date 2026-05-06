@@ -7,10 +7,16 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
+import '../../../services/tem/narration_service.dart';
+import '../../widgets/mute_button.dart';
+import '../../widgets/voice_transition_overlay.dart';
 import '../../viewmodels/tem/tem_session_viewmodel.dart';
+import 'speaking_indicator.dart';
 import 'syllable_highlight_widget.dart';
+import 'tem_page_header.dart';
 import 'tem_session_summary_screen.dart';
 import 'tem_video_player_widget.dart';
 
@@ -37,21 +43,35 @@ class _ClickAudioSource extends StreamAudioSource {
   }
 }
 
-/// Pantalla de ejercicio activo TEM — protocolo de 5 pasos Nivel 1.
+/// Pantalla de ejercicio activo TEM — protocolo MIT multiNivel.
 ///
+/// **Nivel 1 — 5 pasos:**
 /// Paso 1 — ESCUCHA:     App reproduce audio 2×.  Sin grabación.
 /// Paso 2 — UNÍSONO:     Paciente canta junto al audio 4×.  Graba 4 audios.
 /// Paso 3 — COMPLETION:  Audio se silencia a la mitad; paciente completa 4×.
 /// Paso 4 — REPETICIÓN:  Paciente escucha 1× y luego repite solo.
-/// Paso 5 — PREGUNTA:    Muestra la pregunta; paciente responde.  Sin labios.
+/// Paso 5 — PREGUNTA:    Muestra la pregunta; paciente responde.
+///
+/// **Nivel 2 — 4 pasos (con retroceso y pausa 6 s):**
+/// Paso 1 — INTRODUCCIÓN:           App entona estímulo 2× con golpeteo.
+/// Paso 2 — UNÍSONO DESVANECER:     Audio + desvanecimiento a mitad, 2-4 reps.
+/// Paso 3 — REPETICIÓN CON PAUSA:   Audio → 6 s pausa → paciente solo.
+/// Paso 4 — PREGUNTA CON PAUSA:     6 s pausa → pregunta texto → respuesta.
 ///
 /// Todo el flujo es automático (guiado por la app).
-/// El backend Python evaluará los audios; por ahora el stub devuelve éxito.
+/// El backend Python evalúa los audios.
 class TemExerciseScreen extends StatefulWidget {
-  const TemExerciseScreen({super.key}) : args = const {};
-  const TemExerciseScreen.withArgs({super.key, required this.args});
+  const TemExerciseScreen({super.key, this.narration}) : args = const {};
+  const TemExerciseScreen.withArgs({
+    super.key,
+    required this.args,
+    this.narration,
+  });
 
   final Map<String, dynamic> args;
+
+  /// Servicio de narración TTS (opcional, inyectado desde PreSession).
+  final NarrationService? narration;
 
   @override
   State<TemExerciseScreen> createState() => _TemExerciseScreenState();
@@ -80,10 +100,11 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   StreamSubscription<dynamic>? _metronome;
   final List<Timer> _clickTimers = [];
 
-  // ── Countdown overlay ──────────────────────────────────────────────
-  bool _showCountdown = false;
-  int _countdownSec = 3;
-  Timer? _countdownTimer;
+  // ── Voice transition overlay ─────────────────────────────────────
+  bool _showVoiceTransition = false;
+  String _transitionKey = '';
+  String _transitionLabel = '';
+  IconData _transitionIcon = Icons.music_note_rounded;
 
   // ── Estado visual del paso en curso ───────────────────────────────
   /// Paso 1: cuántas reproducciones van (0, 1, 2).
@@ -95,8 +116,21 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   /// Paso 4: ¿ya terminó la fase de escucha?
   bool _step4ListenDone = false;
 
+  // ── Pausa de 6 s (Nivel 2 pasos 3-4) ─────────────────────────
+  bool _pauseTimerActive = false;
+  int _pauseTimerTotal = 6;
+  int _pauseTimerRemaining = 6;
+
+  // ── Flags de retroceso inline N3 ─────────────────────────────
+  bool _n3P1NeedRetroceso = false;
+  bool _n3P3NeedRetroceso = false;
+
   // ── Video player del estímulo ─────────────────────────────────
   final _videoPlayerKey = GlobalKey<TemVideoPlayerWidgetState>();
+
+  /// Campo Firestore que determina qué video mostrar.
+  /// Cambia entre pasos N3: 'video_url', 'video_url_sprechgesang', 'video_url_habla_normal'.
+  String _currentVideoField = 'video_url';
 
   /// El micrófono está abierto.
   bool _isRecording = false;
@@ -168,15 +202,14 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         debugPrint('[AudioSession] configure error: $e');
       }
       _clickBytes = _generateClickBytes();
-      debugPrint('[INIT] calling _loadAudio + _startCountdown');
+      debugPrint('[INIT] calling _loadAudio + _startVoiceTransition');
       await _loadAudio();
-      _startCountdown();
+      _startVoiceTransition();
     });
   }
 
   @override
   void dispose() {
-    _countdownTimer?.cancel();
     _metronome?.cancel();
     _cancelClickTimers();
     _metronomePlayer?.dispose();
@@ -189,10 +222,68 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   // Audio helpers
   // ══════════════════════════════════════════════════════════════════
 
-  Future<String?> _resolveAudioUrl() async {
+  // ══════════════════════════════════════════════════════════════════
+  // Helpers de timing por tipo de audio (N3)
+  // ══════════════════════════════════════════════════════════════════
+
+  /// Devuelve los onsets_ms del audio activo según _currentVideoField.
+  List<int> _getCurrentOnsetsMs(Map<String, dynamic>? stim) {
+    if (stim == null) return [];
+    final field = _currentVideoField == 'video_url_sprechgesang'
+        ? 'onsets_ms_sprechgesang'
+        : _currentVideoField == 'video_url_habla_normal'
+        ? 'onsets_ms_habla_normal'
+        : 'onsets_ms';
+    final raw = stim[field] as List? ?? stim['onsets_ms'] as List? ?? [];
+    return raw.map<int>((e) => (e as num).toInt()).toList();
+  }
+
+  /// Devuelve las durations_ms del audio activo según _currentVideoField.
+  List<int> _getCurrentDurationsMs(Map<String, dynamic>? stim) {
+    if (stim == null) return [];
+    final field = _currentVideoField == 'video_url_sprechgesang'
+        ? 'durations_ms_sprechgesang'
+        : _currentVideoField == 'video_url_habla_normal'
+        ? 'durations_ms_habla_normal'
+        : 'durations_ms';
+    final raw = stim[field] as List? ?? stim['durations_ms'] as List? ?? [];
+    return raw.map<int>((e) => (e as num).toInt()).toList();
+  }
+
+  /// Devuelve audio_duration_ms del audio activo según _currentVideoField.
+  int _getCurrentAudioDurationMs(Map<String, dynamic>? stim) {
+    if (stim == null) return 3000;
+    final field = _currentVideoField == 'video_url_sprechgesang'
+        ? 'audio_duration_ms_sprechgesang'
+        : _currentVideoField == 'video_url_habla_normal'
+        ? 'audio_duration_ms_habla_normal'
+        : 'audio_duration_ms';
+    return (stim[field] as num?)?.toInt() ??
+        (stim['audio_duration_ms'] as num?)?.toInt() ??
+        3000;
+  }
+
+  /// Cambia el campo de video activo y espera hasta 3 s a que el
+  /// nuevo video esté listo para reproducir (para sincronizar con el audio).
+  Future<void> _switchVideoField(String field) async {
+    if (_currentVideoField == field) return;
+    setState(() => _currentVideoField = field);
+    int ms = 0;
+    while (mounted &&
+        _videoPlayerKey.currentState?.isReady == false &&
+        ms < 3000) {
+      await Future.delayed(const Duration(milliseconds: 50));
+      ms += 50;
+    }
+    debugPrint(
+      '[VID] _switchVideoField → $field | ready=${_videoPlayerKey.currentState?.isReady} after ${ms}ms',
+    );
+  }
+
+  Future<String?> _resolveAudioUrl({String audioField = 'audio_url'}) async {
     final vm = context.read<TemSessionViewModel>();
-    final raw = vm.currentStimulus?['audio_url'] as String?;
-    debugPrint('[AUD] _resolveAudioUrl | raw=$raw');
+    final raw = vm.currentStimulus?[audioField] as String?;
+    debugPrint('[AUD] _resolveAudioUrl | field=$audioField | raw=$raw');
     if (raw == null || raw.isEmpty) return null;
     try {
       final sw = Stopwatch()..start();
@@ -304,18 +395,19 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
   /// posición supera esa fracción de la duración total (0.5 = mitad).
   /// También pausa el video en ese mismo instante.
   ///
-  /// [fallbackDurationMs]: duración en ms a usar si just_audio no puede
-  /// determinar la duración del audio (frecuente en WebM/Opus streaming).
-  /// Se obtiene del campo `audio_duration_ms` del estímulo.
+  /// [audioField]: campo del estímulo con la URL de audio a reproducir.
+  /// Por defecto `'audio_url'`. Para N3 pasos 2/3/4 usar
+  /// `'audio_url_sprechgesang'`.
   Future<void> _playAudioAndWait({
     double volume = 1.0,
     double? muteAfterFraction,
     int? fallbackDurationMs,
+    String audioField = 'audio_url',
   }) async {
     debugPrint(
-      '[AUD] _playAudioAndWait START | vol=$volume mute=$muteAfterFraction fallback=$fallbackDurationMs',
+      '[AUD] _playAudioAndWait START | vol=$volume mute=$muteAfterFraction fallback=$fallbackDurationMs field=$audioField',
     );
-    final url = await _resolveAudioUrl();
+    final url = await _resolveAudioUrl(audioField: audioField);
     if (url == null) {
       debugPrint('[AUD] _playAudioAndWait → url null, bailing');
       return;
@@ -339,8 +431,9 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     final vm = context.read<TemSessionViewModel>();
     _startMetronomeOnPosition(vm.currentStimulus);
 
-    // Iniciar video sincronizado con el audio
+    // Iniciar video con adelanto para compensar latencia de pipeline media_kit.
     _videoPlayerKey.currentState?.play();
+    await Future.delayed(const Duration(milliseconds: 150));
 
     // Configurar mute parcial (paso 3 — Completion).
     StreamSubscription<Duration>? posSub;
@@ -489,9 +582,11 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     _metronome?.cancel();
     _cancelClickTimers();
 
-    final raw = stim?['onsets_ms'] as List?;
-    if (raw == null || raw.isEmpty) return;
-    final onsets = raw.map<int>((e) => (e as num).toInt()).toList();
+    // Habla normal no lleva metrónomo
+    if (_currentVideoField == 'video_url_habla_normal') return;
+
+    final onsets = _getCurrentOnsetsMs(stim);
+    if (onsets.isEmpty) return;
     debugPrint('[Metro] ${onsets.length} onsets → $onsets');
 
     bool scheduled = false;
@@ -517,11 +612,10 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
 
   Future<void> _startMetronomeStandalone(Map<String, dynamic>? stim) async {
     _metronome?.cancel();
-    final raw = stim?['onsets_ms'] as List?;
+    final onsets = _getCurrentOnsetsMs(stim);
     final Duration interval;
     final int clicks;
-    if (raw != null && raw.length >= 2) {
-      final onsets = raw.map<int>((e) => (e as num).toInt()).toList();
+    if (onsets.length >= 2) {
       final avgMs = ((onsets.last - onsets.first) / (onsets.length - 1))
           .round()
           .clamp(200, 2000);
@@ -675,40 +769,160 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     final passed = _lastStepPassed;
     setState(() => _waitingForContinue = false);
 
+    // ── Retroceso via vm.stepBack() (N2 y N3 P4/P5) ───────────────
+    // Se evalúa primero para tomar prioridad sobre los bloques específicos.
+    if (vm.isRetroceso) {
+      if (vm.retrocedFromStep != null &&
+          vm.currentStep < vm.retrocedFromStep!) {
+        // Estamos EN el paso de retroceso (ej. N2 P2 viniendo de P3)
+        if (passed) {
+          vm.advanceStep(); // volver al paso original, sin score
+        } else {
+          vm.abandonCurrentStimulus();
+        }
+      } else {
+        // De vuelta en el paso original tras retroceso
+        vm.recordAttemptResult(passed ? 1 : 0, forceAdvance: !passed);
+        vm.clearRetroceso();
+      }
+      _continueOrFinish(vm);
+      return;
+    }
+
+    // ── N3 P1: scoring con retroceso inline ──────────────────────
+    if (vm.nivelActual == 3 && vm.currentStep == 1) {
+      if (passed) {
+        vm.recordAttemptResult(_n3P1NeedRetroceso ? 1 : 2);
+      } else {
+        vm.abandonCurrentStimulus();
+      }
+      _continueOrFinish(vm);
+      return;
+    }
+
+    // ── N3 P2: introducción sprechgesang, sin score ───────────────
+    if (vm.nivelActual == 3 && vm.currentStep == 2) {
+      vm.advanceStep();
+      _continueOrFinish(vm);
+      return;
+    }
+
+    // ── N3 P3: scoring con retroceso inline ──────────────────────
+    if (vm.nivelActual == 3 && vm.currentStep == 3) {
+      if (passed) {
+        vm.recordAttemptResult(_n3P3NeedRetroceso ? 1 : 2);
+      } else {
+        vm.abandonCurrentStimulus();
+      }
+      _continueOrFinish(vm);
+      return;
+    }
+
+    // ── Lógica general: N1, N2, N3 P4/P5 ──────────────────────
     if (vm.currentStep == 1) {
-      vm.advanceStep(); // paso 1 → 2 (solo escucha)
+      // N1 P1 y N2 P1: paso de escucha, sin score
+      vm.advanceStep();
+    } else if (vm.nivelActual >= 2 && !passed && vm.currentStep >= 3) {
+      // N2 P3/P4 y N3 P4/P5: primer fallo → iniciar retroceso
+      vm.stepBack();
     } else if (passed) {
-      vm.recordAttemptResult(1); // éxito → avanza paso
+      // Éxito normal
+      final score = (vm.nivelActual >= 2 && vm.currentStep >= 3) ? 2 : 1;
+      vm.recordAttemptResult(score);
     } else {
-      vm.abandonCurrentStimulus(); // fallo → nuevo estímulo
+      // Fallo normal (N1 cualquier paso, N2 P2)
+      vm.abandonCurrentStimulus();
     }
     _continueOrFinish(vm);
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // Cuenta regresiva
+  // Transición de voz entre pasos
   // ══════════════════════════════════════════════════════════════════
 
-  void _startCountdown() {
+  /// Selecciona la clave TTS, label e ícono según el nivel y paso actual,
+  /// y muestra el [VoiceTransitionOverlay]. Si no hay servicio de narración,
+  /// avanza directamente a [_autoBeginCurrentStep].
+  void _startVoiceTransition() {
     if (!mounted) return;
-    _countdownTimer?.cancel();
+    // Sin narración disponible: avanzar directamente, sin overlay.
+    if (widget.narration == null) {
+      _autoBeginCurrentStep();
+      return;
+    }
+    final vm = context.read<TemSessionViewModel>();
+    final config = _resolveTransitionConfig(vm.nivelActual, vm.currentStep);
     setState(() {
-      _showCountdown = true;
-      _countdownSec = 3;
+      _transitionKey = config.$1;
+      _transitionLabel = config.$2;
+      _transitionIcon = config.$3;
+      _showVoiceTransition = true;
     });
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      if (_countdownSec > 1) {
-        setState(() => _countdownSec--);
-      } else {
-        t.cancel();
-        setState(() => _showCountdown = false);
-        _autoBeginCurrentStep();
-      }
-    });
+  }
+
+  /// Devuelve (audioKey, label, icon) para el nivel y paso dados.
+  (String, String, IconData) _resolveTransitionConfig(int nivel, int step) {
+    return switch ((nivel, step)) {
+      (1, 1) => ('tem_n1p1_intro', 'Vamos a escuchar', Icons.hearing_rounded),
+      (1, 2) => (
+        'tem_n1p2_unison',
+        'Canta junto con el audio',
+        Icons.mic_rounded,
+      ),
+      (1, 3) => (
+        'tem_n1p3_complete',
+        'Completa la frase',
+        Icons.record_voice_over_rounded,
+      ),
+      (1, 4) => ('tem_n1p4_repeat', 'Repite tú solo', Icons.volume_up_rounded),
+      (1, 5) => (
+        'tem_n1p5_question',
+        'Responde la pregunta',
+        Icons.question_answer_rounded,
+      ),
+      (2, 1) => ('tem_n2p1_intro', 'Vamos a escuchar', Icons.hearing_rounded),
+      (2, 2) => (
+        'tem_n2p2_fade',
+        'Canta y completa la frase',
+        Icons.mic_rounded,
+      ),
+      (2, 3) => (
+        'tem_n2p3_pause',
+        'Escucha y repite solo',
+        Icons.volume_up_rounded,
+      ),
+      (2, 4) => (
+        'tem_n2p4_question',
+        'Responde la pregunta',
+        Icons.question_answer_rounded,
+      ),
+      (3, 1) => (
+        'tem_n3p1_delayed',
+        'Repite después de la pausa',
+        Icons.hourglass_empty_rounded,
+      ),
+      (3, 2) => (
+        'tem_n3p2_sprechgesang_intro',
+        'Tono más natural',
+        Icons.music_note_rounded,
+      ),
+      (3, 3) => (
+        'tem_n3p3_sprechgesang_fade',
+        'Completa en tono natural',
+        Icons.record_voice_over_rounded,
+      ),
+      (3, 4) => (
+        'tem_n3p4_spoken',
+        'Repite con voz normal',
+        Icons.chat_bubble_outline_rounded,
+      ),
+      (3, 5) => (
+        'tem_n3p5_question',
+        'Responde la pregunta',
+        Icons.question_answer_rounded,
+      ),
+      _ => ('tem_n1p1_intro', 'Prepárate', Icons.music_note_rounded),
+    };
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -738,17 +952,43 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         '[FLOW] video isReady=${_videoPlayerKey.currentState?.isReady} after ${ms}ms wait',
       );
     }
-    switch (vm.currentStep) {
-      case 1:
-        await _runStep1(vm);
-      case 2:
-        await _runStep2(vm);
-      case 3:
-        await _runStep3(vm);
-      case 4:
-        await _runStep4(vm);
-      case 5:
-        await _runStep5(vm);
+    if (vm.nivelActual == 1) {
+      switch (vm.currentStep) {
+        case 1:
+          await _runStep1(vm);
+        case 2:
+          await _runStep2(vm);
+        case 3:
+          await _runStep3(vm);
+        case 4:
+          await _runStep4(vm);
+        case 5:
+          await _runStep5(vm);
+      }
+    } else if (vm.nivelActual == 3) {
+      switch (vm.currentStep) {
+        case 1:
+          await _runN3Step1(vm);
+        case 2:
+          await _runN3Step2(vm);
+        case 3:
+          await _runN3Step3(vm);
+        case 4:
+          await _runN3Step4(vm);
+        case 5:
+          await _runN3Step5(vm);
+      }
+    } else {
+      switch (vm.currentStep) {
+        case 1:
+          await _runN2Step1(vm);
+        case 2:
+          await _runN2Step2(vm);
+        case 3:
+          await _runN2Step3(vm);
+        case 4:
+          await _runN2Step4(vm);
+      }
     }
   }
 
@@ -933,6 +1173,13 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     // Breve pausa para que el paciente lea la pregunta
     await Future.delayed(const Duration(seconds: 1));
 
+    // Narrar la pregunta por voz antes de grabar la respuesta
+    final ttsKey = vm.currentStimulus?['pregunta_tts_key'] as String?;
+    await widget.narration?.speakAndWait(
+      ttsKey ?? 'exercise_responde_pregunta',
+    );
+    if (!mounted) return;
+
     await _startRec();
 
     final audioDurMs =
@@ -960,6 +1207,553 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
       _waitingForContinue = true;
       _instructionOverride = pass ? '¡Muy bien!' : 'Sigue practicando';
     });
+  }
+
+  // ─── Pausa temporizada (N2 pasos 3-4) ───────────────────────────
+
+  /// Muestra barra de pausa durante [seconds] segundos y espera.
+  Future<void> _runPauseTimer(int seconds) async {
+    setState(() {
+      _pauseTimerActive = true;
+      _pauseTimerTotal = seconds;
+      _pauseTimerRemaining = seconds;
+    });
+    for (int i = seconds; i > 0; i--) {
+      if (!mounted) return;
+      setState(() => _pauseTimerRemaining = i);
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    if (mounted) setState(() => _pauseTimerActive = false);
+  }
+
+  // ─── N2 Paso 1 — INTRODUCCIÓN: reproduce 2× ─────────────────────
+
+  Future<void> _runN2Step1(TemSessionViewModel vm) async {
+    // Idéntico a N1 Paso 1: escuchar 2× con metrónomo.
+    await _runStep1(vm);
+  }
+
+  // ─── N2 Paso 2 — UNÍSONO CON DESVANECIMIENTO ────────────────────
+
+  Future<void> _runN2Step2(TemSessionViewModel vm) async {
+    debugPrint('[N2-STEP2] START');
+    final attemptIds = <String>[];
+    final fbDurMs = (vm.currentStimulus?['audio_duration_ms'] as num?)?.toInt();
+
+    // Fase A: 2 repeticiones obligatorias con desvanecimiento a mitad
+    for (int rep = 1; rep <= 2; rep++) {
+      if (!mounted) return;
+      setState(() {
+        _currentRepetition = rep;
+        _instructionOverride = 'Canta y completa ($rep/2)';
+      });
+      if (rep > 1) await Future.delayed(const Duration(milliseconds: 700));
+
+      await _startRec();
+      await _playAudioAndWait(
+        volume: 1.0,
+        muteAfterFraction: 0.5,
+        fallbackDurationMs: fbDurMs,
+      );
+      final path = await _stopRec();
+      if (path != null) {
+        final id = await _uploadAsync(vm, path: path, step: 2, attempt: rep);
+        if (id != null) attemptIds.add(id);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    var pass = await _evaluateStepAttempts(vm.sessionId ?? '', attemptIds);
+    if (!mounted) return;
+
+    // Fase B: hasta 2 intentos adicionales si fallan los obligatorios
+    if (!pass) {
+      for (int rep = 3; rep <= 4 && !pass; rep++) {
+        if (!mounted) return;
+        setState(() {
+          _isEvaluating = false;
+          _currentRepetition = rep;
+          _instructionOverride = 'Inténtalo de nuevo ($rep/4)';
+        });
+        await Future.delayed(const Duration(milliseconds: 700));
+
+        await _startRec();
+        await _playAudioAndWait(
+          volume: 1.0,
+          muteAfterFraction: 0.5,
+          fallbackDurationMs: fbDurMs,
+        );
+        final path = await _stopRec();
+        if (path != null) {
+          final id = await _uploadAsync(vm, path: path, step: 2, attempt: rep);
+          if (id != null) {
+            setState(() {
+              _isEvaluating = true;
+              _instructionOverride = 'Evaluando…';
+            });
+            pass = await _evaluateAttempt(vm.sessionId ?? '', id);
+          }
+        }
+        if (!mounted) return;
+      }
+    }
+
+    setState(() => _isEvaluating = false);
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      _instructionOverride = pass ? '¡Bien hecho!' : 'Sigue practicando';
+    });
+    debugPrint('[N2-STEP2] END | pass=$pass');
+  }
+
+  // ─── N2 Paso 3 — REPETICIÓN CON PAUSA 6 s ──────────────────────
+
+  Future<void> _runN2Step3(TemSessionViewModel vm) async {
+    debugPrint('[N2-STEP3] START | isRetroceso=${vm.isRetroceso}');
+
+    // Fase A: reproducir audio completo
+    setState(() {
+      _step4ListenDone = false;
+      _instructionOverride = 'Escucha atentamente';
+    });
+    await _playAudioAndWait(volume: 1.0);
+    if (!mounted) return;
+
+    // Fase B: pausa de 6 segundos con barra de progreso
+    setState(() {
+      _step4ListenDone = true;
+      _instructionOverride = 'Espera…';
+    });
+    await _runPauseTimer(6);
+    if (!mounted) return;
+
+    // Fase C: paciente repite con metrónomo como guía rítmica
+    setState(() => _instructionOverride = '¡Ahora repite tú!');
+    _startMetronomeStandalone(vm.currentStimulus); // guía rítmica
+    await _startRec();
+    final audioDurMs =
+        (vm.currentStimulus?['audio_duration_ms'] as num?)?.toInt() ?? 3000;
+    await Future.delayed(Duration(milliseconds: audioDurMs + 1500));
+    final path = await _stopRec();
+    _metronome?.cancel();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 3, attempt: 1)
+        : null;
+
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    final pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      if (pass) {
+        _instructionOverride = '¡Excelente!';
+      } else if (vm.isRetroceso) {
+        _instructionOverride = 'No logró repetir';
+      } else {
+        _instructionOverride = 'Volvamos al paso anterior';
+      }
+    });
+    debugPrint('[N2-STEP3] END | pass=$pass');
+  }
+
+  // ─── N2 Paso 4 — RESPUESTA A PREGUNTA CON PAUSA 6 s ────────────
+
+  Future<void> _runN2Step4(TemSessionViewModel vm) async {
+    debugPrint('[N2-STEP4] START | isRetroceso=${vm.isRetroceso}');
+    setState(
+      () => _instructionOverride = null,
+    ); // muestra pregunta vía showTextQuestion
+
+    // Pausa de 6 segundos
+    await _runPauseTimer(6);
+    if (!mounted) return;
+
+    // Narrar la pregunta por voz antes de grabar la respuesta
+    final ttsKeyN2 = vm.currentStimulus?['pregunta_tts_key'] as String?;
+    await widget.narration?.speakAndWait(
+      ttsKeyN2 ?? 'exercise_responde_pregunta',
+    );
+    if (!mounted) return;
+
+    // Paciente responde la pregunta
+    setState(() => _instructionOverride = 'Responde la pregunta');
+    await _startRec();
+    final audioDurMs =
+        (vm.currentStimulus?['audio_duration_ms'] as num?)?.toInt() ?? 3000;
+    await Future.delayed(Duration(milliseconds: audioDurMs + 2000));
+    final path = await _stopRec();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 4, attempt: 1)
+        : null;
+
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    final pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      if (pass) {
+        _instructionOverride = '¡Muy bien!';
+      } else if (vm.isRetroceso) {
+        _instructionOverride = 'No logró responder';
+      } else {
+        _instructionOverride = 'Volvamos al paso anterior';
+      }
+    });
+    debugPrint('[N2-STEP4] END | pass=$pass');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // NIVEL 3 — 5 pasos (Sprechgesang + Habla Normal)
+  // ══════════════════════════════════════════════════════════════════
+
+  // ─── N3 Paso 1 — Repetición diferida ────────────────────────────
+  //
+  // Protocolo: escucha entonado → pausa 6 s → repite solo con metrónomo.
+  // Retroceso inline: si falla, apoyo con desvanecimiento 50% seguido de
+  // un segundo intento. El flag _n3P1NeedRetroceso informa a
+  // _onContinuePressed si el éxito fue con o sin retroceso.
+  Future<void> _runN3Step1(TemSessionViewModel vm) async {
+    debugPrint('[N3-STEP1] START');
+    await _switchVideoField('video_url');
+    _n3P1NeedRetroceso = false;
+    final audioDurMs =
+        (vm.currentStimulus?['audio_duration_ms'] as num?)?.toInt() ?? 3000;
+
+    // Fase A: escucha entonado 1×
+    setState(() {
+      _step4ListenDone = false;
+      _instructionOverride = 'Escucha la melodía';
+    });
+    await _playAudioAndWait(volume: 1.0);
+    if (!mounted) return;
+
+    // Fase B: pausa 6 s
+    setState(() {
+      _step4ListenDone = true;
+      _instructionOverride = 'Prepárate…';
+    });
+    await _runPauseTimer(6);
+    if (!mounted) return;
+
+    // Fase C: repite solo con metrónomo
+    setState(() => _instructionOverride = '¡Repite tú solo!');
+    await _startMetronomeStandalone(vm.currentStimulus);
+    await _startRec();
+    await Future.delayed(Duration(milliseconds: audioDurMs + 1500));
+    final path = await _stopRec();
+    _metronome?.cancel();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 1, attempt: 1)
+        : null;
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    var pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    if (!pass) {
+      // Retroceso INLINE: apoyo con desvanecimiento entonado (fade 50%)
+      _n3P1NeedRetroceso = true;
+      setState(() => _instructionOverride = 'Vamos a intentarlo juntos');
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+
+      await _startRec();
+      await _playAudioAndWait(
+        volume: 1.0,
+        muteAfterFraction: 0.5,
+        fallbackDurationMs: audioDurMs,
+      );
+      await _stopRec(); // intento de apoyo — no se evalúa
+      if (!mounted) return;
+
+      // Pausa y segundo intento individual
+      setState(() => _instructionOverride = 'Prepárate…');
+      await _runPauseTimer(6);
+      if (!mounted) return;
+
+      setState(() => _instructionOverride = '¡Ahora repite tú solo!');
+      await _startMetronomeStandalone(vm.currentStimulus);
+      await _startRec();
+      await Future.delayed(Duration(milliseconds: audioDurMs + 1500));
+      final path2 = await _stopRec();
+      _metronome?.cancel();
+      if (!mounted) return;
+
+      final attemptId2 = path2 != null
+          ? await _uploadAsync(vm, path: path2, step: 1, attempt: 2)
+          : null;
+      setState(() {
+        _isEvaluating = true;
+        _instructionOverride = 'Evaluando…';
+      });
+      pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId2 ?? '');
+      if (!mounted) return;
+      setState(() => _isEvaluating = false);
+    }
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      _instructionOverride = pass ? '¡Muy bien!' : 'Continuemos';
+    });
+    debugPrint('[N3-STEP1] END | pass=$pass | retroceso=$_n3P1NeedRetroceso');
+  }
+
+  // ─── N3 Paso 2 — Introducción sprechgesang ──────────────────────
+  //
+  // Protocolo: presenta 2× en sprechgesang, paciente solo escucha.
+  // Sin grabación. Sin puntuación.
+  Future<void> _runN3Step2(TemSessionViewModel vm) async {
+    debugPrint('[N3-STEP2] START');
+    await _switchVideoField('video_url_sprechgesang');
+    setState(() {
+      _paso1Plays = 0;
+      _instructionOverride = null;
+    });
+
+    // Primera reproducción (sprechgesang)
+    await _playAudioAndWait(audioField: 'audio_url_sprechgesang');
+    if (!mounted) return;
+    setState(() => _paso1Plays = 1);
+
+    // Segunda reproducción
+    await _playAudioAndWait(audioField: 'audio_url_sprechgesang');
+    if (!mounted) return;
+    setState(() {
+      _paso1Plays = 2;
+      _waitingForContinue = true;
+      _instructionOverride = '¡Escuchaste el tono natural!';
+    });
+    debugPrint('[N3-STEP2] END');
+  }
+
+  // ─── N3 Paso 3 — Sprechgesang con apagado ───────────────────────
+  //
+  // Protocolo: paciente canta sprechgesang con fade a mitad.
+  // Retroceso inline: si falla, apoyo con sprechgesang completo + retry fade.
+  Future<void> _runN3Step3(TemSessionViewModel vm) async {
+    debugPrint('[N3-STEP3] START');
+    await _switchVideoField('video_url_sprechgesang');
+    _n3P3NeedRetroceso = false;
+    final audioDurMs = _getCurrentAudioDurationMs(vm.currentStimulus);
+
+    setState(() {
+      _step4ListenDone = true;
+      _instructionOverride = 'Completa la frase';
+    });
+    await _startRec();
+    await _playAudioAndWait(
+      volume: 1.0,
+      muteAfterFraction: 0.5,
+      fallbackDurationMs: audioDurMs,
+      audioField: 'audio_url_sprechgesang',
+    );
+    final path = await _stopRec();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 3, attempt: 1)
+        : null;
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    var pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    if (!pass) {
+      // Retroceso INLINE: sprechgesang completo como apoyo
+      _n3P3NeedRetroceso = true;
+      setState(() => _instructionOverride = 'Vamos juntos');
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+
+      await _startRec();
+      await _playAudioAndWait(
+        volume: 1.0,
+        fallbackDurationMs: audioDurMs,
+        audioField: 'audio_url_sprechgesang',
+      ); // completo sin fade (apoyo)
+      await _stopRec(); // no se evalúa
+      if (!mounted) return;
+
+      // Retry con fade
+      setState(() => _instructionOverride = 'Completa tú solo');
+      await Future.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+
+      await _startRec();
+      await _playAudioAndWait(
+        volume: 1.0,
+        muteAfterFraction: 0.5,
+        fallbackDurationMs: audioDurMs,
+        audioField: 'audio_url_sprechgesang',
+      );
+      final path2 = await _stopRec();
+      if (!mounted) return;
+
+      final attemptId2 = path2 != null
+          ? await _uploadAsync(vm, path: path2, step: 3, attempt: 2)
+          : null;
+      setState(() {
+        _isEvaluating = true;
+        _instructionOverride = 'Evaluando…';
+      });
+      pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId2 ?? '');
+      if (!mounted) return;
+      setState(() => _isEvaluating = false);
+    }
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      _instructionOverride = pass ? '¡Muy bien!' : 'Continuemos';
+    });
+    debugPrint('[N3-STEP3] END | pass=$pass | retroceso=$_n3P3NeedRetroceso');
+  }
+
+  // ─── N3 Paso 4 — Repetición hablada diferida ────────────────────
+  //
+  // Protocolo: escucha sprechgesang (referencia) → pausa 6 s →
+  // paciente repite con VOZ NORMAL (sin metrónomo).
+  // Retroceso via vm.stepBack() igual que N2 P3.
+  Future<void> _runN3Step4(TemSessionViewModel vm) async {
+    debugPrint('[N3-STEP4] START | isRetroceso=${vm.isRetroceso}');
+    await _switchVideoField('video_url_habla_normal');
+    final audioDurMs = _getCurrentAudioDurationMs(vm.currentStimulus);
+
+    // Fase A: escucha habla normal 1× como referencia
+    setState(() {
+      _step4ListenDone = false;
+      _instructionOverride = 'Escucha, luego repite normalmente';
+    });
+    await _playAudioAndWait(volume: 1.0, audioField: 'audio_url_habla_normal');
+    if (!mounted) return;
+
+    // Fase B: pausa 6 s
+    setState(() {
+      _step4ListenDone = true;
+      _instructionOverride = 'Prepárate…';
+    });
+    await _runPauseTimer(6);
+    if (!mounted) return;
+
+    // Fase C: repite con voz normal (sin metrónomo)
+    setState(() => _instructionOverride = '¡Habla normalmente!');
+    await _startRec();
+    await Future.delayed(Duration(milliseconds: audioDurMs + 2000));
+    final path = await _stopRec();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 4, attempt: 1)
+        : null;
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    final pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      if (pass) {
+        _instructionOverride = '¡Excelente!';
+      } else if (vm.isRetroceso) {
+        _instructionOverride = 'No logró repetir';
+      } else {
+        _instructionOverride = 'Volvamos al paso anterior';
+      }
+    });
+    debugPrint('[N3-STEP4] END | pass=$pass');
+  }
+
+  // ─── N3 Paso 5 — Pregunta (habla normal) ────────────────────────
+  //
+  // Protocolo idéntico a N2 Paso 4: pausa 6 s → TTS pregunta →
+  // paciente responde con voz natural.
+  // Retroceso via vm.stepBack() igual que N2 P4.
+  Future<void> _runN3Step5(TemSessionViewModel vm) async {
+    debugPrint('[N3-STEP5] START | isRetroceso=${vm.isRetroceso}');
+    await _switchVideoField('video_url');
+    setState(() => _instructionOverride = null);
+
+    // Pausa de 6 segundos
+    await _runPauseTimer(6);
+    if (!mounted) return;
+
+    // Breve espera para que el stop() del VoiceTransitionOverlay se complete
+    // antes de iniciar la siguiente reproducción del NarrationService.
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+
+    // Narrar la pregunta por TTS (igual que N1/N2: lee la pregunta del estímulo)
+    final ttsKey = vm.currentStimulus?['pregunta_tts_key'] as String?;
+    await widget.narration?.speakAndWait(
+      ttsKey ?? 'exercise_responde_pregunta',
+    );
+    if (!mounted) return;
+
+    // Paciente responde con voz normal
+    setState(() => _instructionOverride = 'Responde con tu voz normal');
+    await _startRec();
+    final audioDurMs = _getCurrentAudioDurationMs(vm.currentStimulus);
+    await Future.delayed(Duration(milliseconds: audioDurMs + 2000));
+    final path = await _stopRec();
+    if (!mounted) return;
+
+    final attemptId = path != null
+        ? await _uploadAsync(vm, path: path, step: 5, attempt: 1)
+        : null;
+    setState(() {
+      _isEvaluating = true;
+      _instructionOverride = 'Evaluando…';
+    });
+    final pass = await _evaluateAttempt(vm.sessionId ?? '', attemptId ?? '');
+    if (!mounted) return;
+    setState(() => _isEvaluating = false);
+
+    setState(() {
+      _lastStepPassed = pass;
+      _waitingForContinue = true;
+      if (pass) {
+        _instructionOverride = '¡Muy bien!';
+      } else if (vm.isRetroceso) {
+        _instructionOverride = 'No logró responder';
+      } else {
+        _instructionOverride = 'Volvamos al paso anterior';
+      }
+    });
+    debugPrint('[N3-STEP5] END | pass=$pass');
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -1002,6 +1796,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         _paso1Plays = 0;
         _currentRepetition = 0;
         _step4ListenDone = false;
+        _pauseTimerActive = false;
         _instructionOverride = null;
       });
       // Nuevo estímulo (paso 1): detener audio/video anterior y cargar el nuevo
@@ -1019,8 +1814,8 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         await _audioPlayer.stop();
         await _loadAudio();
       }
-      debugPrint('[FLOW] starting countdown');
-      _startCountdown();
+      debugPrint('[FLOW] starting voice transition');
+      _startVoiceTransition();
     });
   }
 
@@ -1042,29 +1837,27 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
         final syllables = List<String>.from(
           (stimulus?['syllables'] as List?) ?? [],
         );
-        final onsetsMs = List<int>.from(
-          (stimulus?['onsets_ms'] as List?) ?? [],
-        );
-        final durationsMs = List<int>.from(
-          (stimulus?['durations_ms'] as List?) ?? [],
-        );
+        final onsetsMs = _getCurrentOnsetsMs(stimulus);
+        final durationsMs = _getCurrentDurationsMs(stimulus);
 
         return Scaffold(
           backgroundColor: _bgColor,
-          appBar: AppBar(
-            title: Text(instructionText),
-            backgroundColor: _accentColor,
-            foregroundColor: Colors.white,
-            elevation: 0,
-          ),
           body: Stack(
             children: [
               Column(
                 children: [
+                  // Header personalizado
+                  TemPageHeader(
+                    title: instructionText,
+                    backgroundColor: _accentColor,
+                    trailing: widget.narration != null
+                        ? MuteButton(narration: widget.narration!)
+                        : null,
+                  ),
                   // Barra de progreso + nivel/paso
                   _StepProgressBar(
                     currentStep: vm.currentStep,
-                    totalSteps: TemSessionViewModel.totalSteps,
+                    totalSteps: vm.totalSteps,
                   ),
                   // Contenido principal
                   Expanded(
@@ -1109,11 +1902,18 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
                 ],
               ),
 
-              // Overlay de cuenta regresiva — muestra instrucción
-              if (_showCountdown)
-                _CountdownOverlay(
-                  seconds: _countdownSec,
-                  instruction: instructionText,
+              // Overlay de transición de voz entre pasos
+              if (_showVoiceTransition && widget.narration != null)
+                VoiceTransitionOverlay(
+                  narration: widget.narration!,
+                  audioKey: _transitionKey,
+                  label: _transitionLabel,
+                  icon: _transitionIcon,
+                  onDone: () {
+                    if (!mounted) return;
+                    setState(() => _showVoiceTransition = false);
+                    _autoBeginCurrentStep();
+                  },
                 ),
             ],
           ),
@@ -1143,19 +1943,22 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
           // Video del estímulo
           TemVideoPlayerWidget(
             key: _videoPlayerKey,
-            videoUrl: stimulus?['video_url'] as String?,
+            videoUrl: stimulus?[_currentVideoField] as String?,
           ),
           const SizedBox(height: 12),
 
           // Sílabas resaltadas (o texto plano si no hay datos)
+          // Habla normal no muestra resaltado de sílabas
           if (syllables.isNotEmpty &&
               syllables.length == onsetsMs.length &&
-              syllables.length == durationsMs.length)
+              syllables.length == durationsMs.length &&
+              _currentVideoField != 'video_url_habla_normal')
             SyllableHighlightWidget(
               syllables: syllables,
               onsetsMs: onsetsMs,
               durationsMs: durationsMs,
               audioPosition: _audioPlayer.positionStream,
+              texto: texto,
             )
           else
             _StimulusText(texto: texto),
@@ -1204,7 +2007,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
                   flex: 3,
                   child: TemVideoPlayerWidget(
                     key: _videoPlayerKey,
-                    videoUrl: stimulus?['video_url'] as String?,
+                    videoUrl: stimulus?[_currentVideoField] as String?,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1216,14 +2019,17 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
+                        // Habla normal no muestra resaltado de sílabas
                         if (syllables.isNotEmpty &&
                             syllables.length == onsetsMs.length &&
-                            syllables.length == durationsMs.length)
+                            syllables.length == durationsMs.length &&
+                            _currentVideoField != 'video_url_habla_normal')
                           SyllableHighlightWidget(
                             syllables: syllables,
                             onsetsMs: onsetsMs,
                             durationsMs: durationsMs,
                             audioPosition: _audioPlayer.positionStream,
+                            texto: texto,
                           )
                         else
                           _StimulusText(texto: texto),
@@ -1300,35 +2106,68 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
     if (_isEvaluating) {
       return const _LoadingContinueButton();
     }
-    switch (vm.currentStep) {
-      case 1:
+    if (_pauseTimerActive) {
+      return _PauseProgressBar(
+        remaining: _pauseTimerRemaining,
+        total: _pauseTimerTotal,
+      );
+    }
+
+    // ── N3: indicadores específicos ────────────────────────────────────
+    if (vm.nivelActual == 3) {
+      if (vm.currentStep == 2) {
         return _Paso1AutoIndicator(plays: _paso1Plays);
-
-      case 2:
-      case 3:
-        return _RepetitionIndicator(
-          current: _currentRepetition,
-          total: 4,
-          isRecording: _isRecording,
-          isEvaluating: _isEvaluating,
-        );
-
-      case 4:
-        return _Step4Indicator(
-          listenDone: _step4ListenDone,
-          isRecording: _isRecording,
-          isEvaluating: _isEvaluating,
-        );
-
-      case 5:
+      }
+      if (vm.currentStep == 5) {
         return _Step5Indicator(
           isRecording: _isRecording,
           isEvaluating: _isEvaluating,
         );
-
-      default:
-        return const SizedBox.shrink();
+      }
+      // P1, P3, P4: escucha → graba
+      return _Step4Indicator(
+        listenDone: _step4ListenDone,
+        isRecording: _isRecording,
+        isEvaluating: _isEvaluating,
+      );
     }
+
+    // Paso 1 es escucha en ambos niveles
+    if (vm.currentStep == 1) {
+      return _Paso1AutoIndicator(plays: _paso1Plays);
+    }
+
+    // Pasos de repetición con conteo (N1 P2-P3, N2 P2)
+    if ((vm.nivelActual == 1 && (vm.currentStep == 2 || vm.currentStep == 3)) ||
+        (vm.nivelActual >= 2 && vm.currentStep == 2)) {
+      return _RepetitionIndicator(
+        current: _currentRepetition,
+        total: vm.nivelActual >= 2 ? 2 : 4,
+        isRecording: _isRecording,
+        isEvaluating: _isEvaluating,
+      );
+    }
+
+    // Pasos de escucha+repetición (N1 P4, N2 P3)
+    if ((vm.nivelActual == 1 && vm.currentStep == 4) ||
+        (vm.nivelActual >= 2 && vm.currentStep == 3)) {
+      return _Step4Indicator(
+        listenDone: _step4ListenDone,
+        isRecording: _isRecording,
+        isEvaluating: _isEvaluating,
+      );
+    }
+
+    // Pasos de pregunta (N1 P5, N2 P4)
+    if ((vm.nivelActual == 1 && vm.currentStep == 5) ||
+        (vm.nivelActual >= 2 && vm.currentStep == 4)) {
+      return _Step5Indicator(
+        isRecording: _isRecording,
+        isEvaluating: _isEvaluating,
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 }
 
@@ -1446,94 +2285,27 @@ class _QuestionCard extends StatelessWidget {
         children: [
           const Icon(
             Icons.record_voice_over_rounded,
-            size: 36,
+            size: 48,
             color: Color(0xFFF57C00),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           const Text(
-            'Responde con lo que aprendiste:',
+            'Responde:',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 14, color: Color(0xFFE65100)),
+            style: TextStyle(fontSize: 18, color: Color(0xFFE65100)),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Text(
             pregunta,
             textAlign: TextAlign.center,
             style: const TextStyle(
-              fontSize: 22,
+              fontSize: 26,
               fontWeight: FontWeight.bold,
               color: Color(0xFF4E342E),
               height: 1.35,
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _CountdownOverlay extends StatelessWidget {
-  final int seconds;
-  final String? instruction;
-  const _CountdownOverlay({required this.seconds, this.instruction});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black.withOpacity(0.55),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (instruction != null && instruction!.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF48A63),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  instruction!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-            const SizedBox(height: 8),
-            const Text(
-              'Prepárate…',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 20,
-                fontWeight: FontWeight.w400,
-                letterSpacing: 1.5,
-              ),
-            ),
-            const SizedBox(height: 20),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              transitionBuilder: (child, anim) =>
-                  ScaleTransition(scale: anim, child: child),
-              child: Text(
-                '$seconds',
-                key: ValueKey(seconds),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 96,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1553,13 +2325,13 @@ class _Paso1AutoIndicator extends StatelessWidget {
       children: [
         Icon(
           allDone ? Icons.check_circle_rounded : Icons.hearing_rounded,
-          size: 48,
+          size: 56,
           color: const Color(0xFFF48A63),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         Text(
           allDone ? 'Audio reproducido' : 'Escucha atentamente',
-          style: const TextStyle(color: Colors.black54, fontSize: 14),
+          style: const TextStyle(color: Colors.black54, fontSize: 18),
         ),
         const SizedBox(height: 16),
         Row(
@@ -1570,9 +2342,9 @@ class _Paso1AutoIndicator extends StatelessWidget {
             final active = i == plays;
             return AnimatedContainer(
               duration: const Duration(milliseconds: 300),
-              width: active ? 40 : 32,
-              height: active ? 40 : 32,
-              margin: const EdgeInsets.symmetric(horizontal: 6),
+              width: active ? 48 : 40,
+              height: active ? 48 : 40,
+              margin: const EdgeInsets.symmetric(horizontal: 8),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: done
@@ -1585,13 +2357,13 @@ class _Paso1AutoIndicator extends StatelessWidget {
                   ? const Icon(
                       Icons.check_rounded,
                       color: Colors.white,
-                      size: 18,
+                      size: 24,
                     )
                   : active
                   ? const Icon(
                       Icons.volume_up_rounded,
                       color: Color(0xFFF48A63),
-                      size: 20,
+                      size: 28,
                     )
                   : null,
             );
@@ -1630,8 +2402,8 @@ class _RepetitionIndicator extends StatelessWidget {
             final active = i == current - 1;
             return AnimatedContainer(
               duration: const Duration(milliseconds: 300),
-              width: active ? 18 : 13,
-              height: active ? 18 : 13,
+              width: active ? 28 : 22,
+              height: active ? 28 : 22,
               margin: const EdgeInsets.symmetric(horizontal: 4),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
@@ -1645,7 +2417,7 @@ class _RepetitionIndicator extends StatelessWidget {
                   ? const Icon(
                       Icons.check_rounded,
                       color: Colors.white,
-                      size: 10,
+                      size: 14,
                     )
                   : null,
             );
@@ -1681,24 +2453,24 @@ class _Step4Indicator extends StatelessWidget {
     if (!listenDone) {
       return const Column(
         children: [
-          Icon(Icons.hearing_rounded, size: 48, color: Color(0xFFF48A63)),
+          Icon(Icons.hearing_rounded, size: 56, color: Color(0xFFF48A63)),
           SizedBox(height: 8),
           Text(
-            'Escuchando el audio…',
-            style: TextStyle(color: Colors.black54, fontSize: 14),
+            'Escuchando…',
+            style: TextStyle(color: Colors.black54, fontSize: 18),
           ),
         ],
       );
     }
     return Column(
       children: [
-        const Icon(Icons.mic_rounded, size: 48, color: Color(0xFFF48A63)),
+        const Icon(Icons.mic_rounded, size: 56, color: Color(0xFFF48A63)),
         const SizedBox(height: 8),
         const Text(
           '¡Tu turno!',
           style: TextStyle(
             color: Color(0xFFF48A63),
-            fontSize: 16,
+            fontSize: 20,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -1750,24 +2522,24 @@ class _RecordingPulse extends StatelessWidget {
     return Column(
       children: [
         Container(
-          width: 72,
-          height: 72,
+          width: 96,
+          height: 96,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: const Color(0xFF4CAF50).withOpacity(0.15),
           ),
           child: const Icon(
             Icons.mic_rounded,
-            size: 38,
+            size: 48,
             color: Color(0xFF4CAF50),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         const Text(
           'Grabando…',
           style: TextStyle(
             color: Color(0xFF4CAF50),
-            fontSize: 14,
+            fontSize: 18,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -1794,7 +2566,7 @@ class _EvaluatingWidget extends StatelessWidget {
         SizedBox(height: 8),
         Text(
           'Evaluando…',
-          style: TextStyle(color: Colors.black54, fontSize: 13),
+          style: TextStyle(color: Colors.black54, fontSize: 16),
         ),
       ],
     );
@@ -1813,9 +2585,13 @@ class _ContinueButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
       child: SizedBox(
         width: double.infinity,
-        height: 56,
-        child: ElevatedButton(
-          onPressed: onPressed,
+        height: 72,
+        child: ElevatedButton.icon(
+          onPressed: () {
+            HapticFeedback.mediumImpact();
+            onPressed();
+          },
+          icon: const Icon(Icons.arrow_forward_rounded, size: 28),
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFFF48A63),
             foregroundColor: Colors.white,
@@ -1825,10 +2601,10 @@ class _ContinueButton extends StatelessWidget {
             elevation: 4,
             shadowColor: const Color(0xFFF48A63).withOpacity(0.4),
           ),
-          child: const Text(
+          label: const Text(
             'CONTINUAR',
             style: TextStyle(
-              fontSize: 18,
+              fontSize: 22,
               fontWeight: FontWeight.bold,
               letterSpacing: 1.2,
             ),
@@ -1875,6 +2651,46 @@ class _LoadingContinueButton extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Barra horizontal de pausa temporizada (N2 pasos 3-4).
+class _PauseProgressBar extends StatelessWidget {
+  final int remaining;
+  final int total;
+  const _PauseProgressBar({required this.remaining, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = remaining / total;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$remaining s',
+            style: const TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFFF48A63),
+            ),
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 12,
+              backgroundColor: const Color(0xFFFBE9E7),
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                Color(0xFFF48A63),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

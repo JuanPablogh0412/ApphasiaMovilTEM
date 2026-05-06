@@ -5,7 +5,7 @@
 //   1. SessionManager.applyTonalAntiPerseveration → método estático puro.
 //   2. RhythmEngine.hapticPatternMs             → derivado de LipTimeline.
 //   3. RecordingService.kAudioConfig             → constante estática.
-//   4. TemSessionViewModel.totalSteps/maxAttempts → constantes estáticas.
+//   4. TemSessionViewModel.maxAttempts            → constante estática.
 //   5. TemSessionSummaryScreen.withArgs          → widget sin Provider/Firebase.
 //
 // Las partes que requieren Firebase (Firestore, Storage, mic) se cubren
@@ -321,16 +321,12 @@ void main() {
   });
 
   // =========================================================================
-  // 4. TemSessionViewModel — constantes del protocolo MIT (estáticas)
+  // 4. TemSessionViewModel — constantes del protocolo MIT
   // =========================================================================
   // Nota: los tests de la FSM (advanceStep, recordAttemptResult, etc.) requieren
   // Firebase inicializado (StimulusRepository y SessionManager usan Firestore).
   // Esos tests se ubican en test/integration/tem_viewmodel_integration_test.dart.
   group('Sprint1 / TemSessionViewModel — constantes', () {
-    test('totalSteps es 5 (protocolo MIT Nivel 1)', () {
-      expect(TemSessionViewModel.totalSteps, equals(5));
-    });
-
     test('maxAttempts es 4 (cuatro intentos antes de abandon)', () {
       expect(TemSessionViewModel.maxAttempts, equals(4));
     });

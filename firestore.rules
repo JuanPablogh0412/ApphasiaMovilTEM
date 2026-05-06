@@ -26,11 +26,14 @@ service cloud.firestore {
 
     // ══════════════════════════════════════════════════════════
     //  pacientes
+    //  - Staff: lectura, creación, actualización, eliminación
+    //  - Paciente: crea su perfil al registrarse, lee y actualiza
     // ══════════════════════════════════════════════════════════
     match /pacientes/{pacienteId} {
       allow read:   if isStaff() || isOwner(pacienteId);
-      allow write:  if isStaff();
-      allow update: if isOwner(pacienteId);
+      allow create: if isStaff() || isOwner(pacienteId);
+      allow update: if isStaff() || isOwner(pacienteId);
+      allow delete: if isAdmin();
 
       // ejercicios asignados (terapeuta asigna, paciente lee)
       match /ejercicios_asignados/{asignacionId} {
@@ -47,25 +50,21 @@ service cloud.firestore {
 
     // ══════════════════════════════════════════════════════════
     //  ejercicios  (general — compartida por TEM, SR, VNEST)
+    //  Cloud Functions (admin SDK) manejan escrituras de paciente.
+    //  Staff y creadores escriben desde la web.
     // ══════════════════════════════════════════════════════════
     match /ejercicios/{docId} {
-      allow read:   if isSignedIn();
-      allow write:  if isStaff() || isCreador();
-      // Paciente crea su propio ejercicio (móvil TEM: buildSession)
-      allow create: if isSignedIn()
-                    && request.resource.data.id_paciente == request.auth.uid;
-      // Paciente actualiza su propio ejercicio (móvil TEM: closeSession)
-      allow update: if isSignedIn()
-                    && resource.data.id_paciente == request.auth.uid;
+      allow read:  if isSignedIn();
+      allow write: if isStaff() || isCreador();
     }
 
     // ══════════════════════════════════════════════════════════
     //  ejercicios_TEM
+    //  Cloud Functions (admin SDK) manejan escrituras de paciente.
     // ══════════════════════════════════════════════════════════
     match /ejercicios_TEM/{docId} {
-      allow read:          if isSignedIn();
-      allow write:         if isStaff();
-      allow create, update: if isSignedIn();
+      allow read:  if isSignedIn();
+      allow write: if isStaff();
     }
 
     // ══════════════════════════════════════════════════════════
@@ -94,31 +93,30 @@ service cloud.firestore {
 
     // ══════════════════════════════════════════════════════════
     //  sesiones_TEM  +  subcollection attempts
+    //  - Staff: acceso total
+    //  - Paciente: crea/actualiza solo SUS sesiones e intentos
     // ══════════════════════════════════════════════════════════
     match /sesiones_TEM/{sessionId} {
       allow read:   if isSignedIn();
-      allow write:  if isStaff();
-      // Paciente crea su propia sesión (móvil TEM: buildSession)
-      allow create: if isSignedIn()
-                    && request.resource.data.pacienteId == request.auth.uid;
-      // Paciente actualiza su propia sesión (progreso, cierre)
-      allow update: if isSignedIn()
-                    && resource.data.pacienteId == request.auth.uid;
+      allow create: if isStaff()
+                    || (isSignedIn() && request.resource.data.pacienteId == request.auth.uid);
+      allow update: if isStaff()
+                    || (isSignedIn() && resource.data.pacienteId == request.auth.uid);
+      allow delete: if isStaff();
 
-      // Intentos de grabación del paciente
       match /attempts/{attemptId} {
         allow read:   if isSignedIn();
-        allow write:  if isStaff();
-        allow create: if isSignedIn()
-                      && request.resource.data.pacienteId == request.auth.uid;
-        allow update: if isSignedIn()
-                      && resource.data.pacienteId == request.auth.uid;
+        allow create: if isStaff()
+                      || (isSignedIn() && request.resource.data.pacienteId == request.auth.uid);
+        allow update: if isStaff()
+                      || (isSignedIn() && resource.data.pacienteId == request.auth.uid);
+        allow delete: if isStaff();
       }
     }
 
     // ══════════════════════════════════════════════════════════
     //  analysis_results_TEM
-    //  Backend Python usa Admin SDK (bypass). Terapeuta override.
+    //  Backend Python usa Admin SDK (bypass). Solo staff desde web.
     // ══════════════════════════════════════════════════════════
     match /analysis_results_TEM/{docId} {
       allow read:  if isSignedIn();
@@ -126,16 +124,29 @@ service cloud.firestore {
     }
 
     // ══════════════════════════════════════════════════════════
+    //  asignaciones_TEM  (terapeuta asigna estímulos a paciente)
+    //  Paciente solo lee para cargar sus asignaciones activas.
+    // ══════════════════════════════════════════════════════════
+    match /asignaciones_TEM/{docId} {
+      allow read:  if isSignedIn();
+      allow write: if isStaff();
+    }
+
+    // ══════════════════════════════════════════════════════════
     //  terapeutas
+    //  Cloud Function aprobarTerapeuta crea el doc (admin SDK).
+    //  Admin gestiona; terapeuta actualiza su propio perfil.
     // ══════════════════════════════════════════════════════════
     match /terapeutas/{terapeutaId} {
       allow read:   if isSignedIn();
-      allow write:  if isAdmin();
-      allow update: if isOwner(terapeutaId);
+      allow create: if isAdmin();
+      allow update: if isAdmin() || isOwner(terapeutaId);
+      allow delete: if isAdmin();
     }
 
     // ══════════════════════════════════════════════════════════
     //  creadores
+    //  Cloud Function registrarCreador crea el doc (admin SDK).
     // ══════════════════════════════════════════════════════════
     match /creadores/{creadorId} {
       allow read:  if isSignedIn();
@@ -144,6 +155,7 @@ service cloud.firestore {
 
     // ══════════════════════════════════════════════════════════
     //  solicitudes  (registro terapeuta → admin aprueba)
+    //  Cualquier usuario autenticado puede solicitar ser terapeuta.
     // ══════════════════════════════════════════════════════════
     match /solicitudes/{solicitudId} {
       allow read:   if isAdmin();
