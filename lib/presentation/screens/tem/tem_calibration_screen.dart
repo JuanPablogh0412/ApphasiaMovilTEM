@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show File;
 import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -365,7 +366,11 @@ class _TemCalibrationScreenState extends State<TemCalibrationScreen> {
           onNext: _nextPhase,
         );
       case _ScreenStep.allDone:
-        return _AllDoneView(key: const ValueKey('allDone'), onRetry: _restart);
+        return _AllDoneView(
+          key: const ValueKey('allDone'),
+          onRetry: _restart,
+          pacienteId: _pacienteId ?? '',
+        );
       case _ScreenStep.error:
         return _ErrorView(
           key: const ValueKey('err'),
@@ -831,9 +836,45 @@ class _PhaseDoneView extends StatelessWidget {
 // Vista 4 — Todas las fases completadas
 // ═══════════════════════════════════════════════════════════════════════════
 
-class _AllDoneView extends StatelessWidget {
+class _AllDoneView extends StatefulWidget {
   final VoidCallback onRetry;
-  const _AllDoneView({super.key, required this.onRetry});
+  final String pacienteId;
+  const _AllDoneView({
+    super.key,
+    required this.onRetry,
+    required this.pacienteId,
+  });
+
+  @override
+  State<_AllDoneView> createState() => _AllDoneViewState();
+}
+
+class _AllDoneViewState extends State<_AllDoneView> {
+  bool _confirmed = false;
+  StreamSubscription<DocumentSnapshot>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.pacienteId.isNotEmpty) {
+      _sub = FirebaseFirestore.instance
+          .collection('pacientes')
+          .doc(widget.pacienteId)
+          .snapshots()
+          .listen((snap) {
+            final cal = snap.data()?['calibracion'];
+            if (cal is Map && cal['last_calibrated_at'] != null) {
+              if (mounted) setState(() => _confirmed = true);
+            }
+          });
+    }
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -895,8 +936,50 @@ class _AllDoneView extends StatelessWidget {
           ),
 
           const SizedBox(height: 36),
+
+          if (_confirmed)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () => Navigator.pop(context, true),
+                icon: const Icon(Icons.home_rounded),
+                label: const Text(
+                  'Ir al inicio',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontFamily: 'Manrope',
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+              ),
+            )
+          else
+            Column(
+              children: [
+                const CircularProgressIndicator(color: Colors.green),
+                const SizedBox(height: 12),
+                const Text(
+                  'Verificando calibración…',
+                  style: TextStyle(
+                    fontFamily: 'Manrope',
+                    color: Colors.black54,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+
+          const SizedBox(height: 16),
           TextButton(
-            onPressed: onRetry,
+            onPressed: widget.onRetry,
             child: const Text(
               'Calibrar de nuevo',
               style: TextStyle(color: Color(0xFFF48A63), fontFamily: 'Manrope'),

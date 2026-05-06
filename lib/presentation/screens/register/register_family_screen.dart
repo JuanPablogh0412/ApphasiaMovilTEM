@@ -43,6 +43,9 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
   bool _isListening = false;
   bool _isLoading = false;
   bool _showConfirmation = false;
+  bool _userStopped = false;
+  String _confirmedText = '';
+  String _lastPartial = '';
   String recognizedText = "";
 
   int? editingIndex;
@@ -98,8 +101,8 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
     var status = await Permission.microphone.request();
     if (status.isGranted) {
       await _speech.initialize(
-        onStatus: (val) => print('Speech status: $val'),
-        onError: (val) => print('Speech error: $val'),
+        onStatus: _onSpeechStatus,
+        onError: (err) => debugPrint('STT error: ${err.errorMsg}'),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -112,16 +115,60 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
     }
   }
 
+  void _onSpeechStatus(String status) {
+    if (!mounted) return;
+    if (status == 'notListening' && _isListening && !_userStopped) {
+      if (_lastPartial.isNotEmpty) {
+        _confirmedText = _confirmedText.isEmpty
+            ? _lastPartial
+            : '$_confirmedText $_lastPartial';
+        _lastPartial = '';
+      }
+      _speech.listen(
+        localeId: 'es_ES',
+        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(minutes: 3),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: false,
+        ),
+        onResult: (result) {
+          _lastPartial = result.recognizedWords;
+          final full = _confirmedText.isEmpty
+              ? result.recognizedWords
+              : '$_confirmedText ${result.recognizedWords}';
+          setState(() {
+            recognizedText = full;
+            _infoIA.text = full;
+          });
+        },
+      );
+    }
+  }
+
   void _startListening() async {
     bool available = await _speech.initialize();
     if (available) {
+      _userStopped = false;
+      _confirmedText = _infoIA.text.trim();
+      _lastPartial = '';
       setState(() => _isListening = true);
       _speech.listen(
         localeId: 'es_ES',
+        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(minutes: 3),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: false,
+        ),
         onResult: (result) {
+          _lastPartial = result.recognizedWords;
+          final full = _confirmedText.isEmpty
+              ? result.recognizedWords
+              : '$_confirmedText ${result.recognizedWords}';
           setState(() {
-            recognizedText = result.recognizedWords;
-            _infoIA.text = recognizedText;
+            recognizedText = full;
+            _infoIA.text = full;
           });
         },
       );
@@ -129,6 +176,7 @@ class _RegisterFamilyScreenState extends State<RegisterFamilyScreen> {
   }
 
   void _stopListening() async {
+    _userStopped = true;
     await _speech.stop();
     setState(() => _isListening = false);
   }

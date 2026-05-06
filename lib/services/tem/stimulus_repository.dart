@@ -143,13 +143,18 @@ class StimulusRepository {
   /// que no cumple el umbral (rachas consecutivas).
   Future<int> countConsecutiveHighSessions(
     String pacienteId, {
+    int? nivel,
     double threshold = 90.0,
     int maxCheck = 5,
   }) async {
-    final snap = await _firestore
+    var query = _firestore
         .collection('sesiones_TEM')
         .where('pacienteId', isEqualTo: pacienteId)
-        .where('status', isEqualTo: 'completed')
+        .where('status', isEqualTo: 'completed');
+    if (nivel != null) {
+      query = query.where('nivel', isEqualTo: nivel);
+    }
+    final snap = await query
         .orderBy('completedAt', descending: true)
         .limit(maxCheck)
         .get();

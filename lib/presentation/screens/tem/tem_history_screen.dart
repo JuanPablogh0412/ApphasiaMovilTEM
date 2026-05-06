@@ -1,23 +1,40 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../../services/tem/stimulus_repository.dart';
 import 'tem_page_header.dart';
 
 /// Pantalla: progreso clínico del paciente en el protocolo TEM.
 /// Muestra una línea de tiempo de 3 niveles con el estado de cada uno.
-/// Los argumentos de ruta esperados son:
-///   { 'nivel': int, 'consecutive': int }
-class TemHistoryScreen extends StatelessWidget {
+class TemHistoryScreen extends StatefulWidget {
   const TemHistoryScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final args =
-        (ModalRoute.of(context)?.settings.arguments as Map?)
-            ?.cast<String, dynamic>() ??
-        {};
-    final int nivel = (args['nivel'] as int?) ?? 1;
-    final int consecutive = (args['consecutive'] as int?) ?? 0;
+  State<TemHistoryScreen> createState() => _TemHistoryScreenState();
+}
 
+class _TemHistoryScreenState extends State<TemHistoryScreen> {
+  final _repository = StimulusRepository();
+  late Future<({int nivel, int consecutive})> _dataFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  Future<({int nivel, int consecutive})> _loadData() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final nivel = await _repository.getNivelActual(uid);
+    final consecutive = await _repository.countConsecutiveHighSessions(
+      uid,
+      nivel: nivel,
+    );
+    return (nivel: nivel, consecutive: consecutive);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFFFF7F2),
       body: SafeArea(
@@ -25,36 +42,53 @@ class TemHistoryScreen extends StatelessWidget {
           children: [
             const TemPageHeader(title: 'Mi Progreso'),
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 20,
-                ),
-                child: Column(
-                  children: [
-                    _LevelCard(
-                      level: 1,
-                      title: 'Nivel 1 — Melodía con apoyo',
-                      nivelActual: nivel,
-                      consecutive: consecutive,
+              child: FutureBuilder<({int nivel, int consecutive})>(
+                future: _dataFuture,
+                builder: (context, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const Center(
+                      child: CircularProgressIndicator(
+                        color: Color(0xFFF48A63),
+                      ),
+                    );
+                  }
+                  if (snap.hasError) {
+                    debugPrint('TemHistory error: ${snap.error}');
+                  }
+                  final int nivel = snap.data?.nivel ?? 1;
+                  final int consecutive = snap.data?.consecutive ?? 0;
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 20,
                     ),
-                    _TimelineConnector(active: nivel >= 2),
-                    _LevelCard(
-                      level: 2,
-                      title: 'Nivel 2 — Desvanecimiento',
-                      nivelActual: nivel,
-                      consecutive: consecutive,
+                    child: Column(
+                      children: [
+                        _LevelCard(
+                          level: 1,
+                          title: 'Nivel 1 — Melodía con apoyo',
+                          nivelActual: nivel,
+                          consecutive: consecutive,
+                        ),
+                        _TimelineConnector(active: nivel >= 2),
+                        _LevelCard(
+                          level: 2,
+                          title: 'Nivel 2 — Desvanecimiento',
+                          nivelActual: nivel,
+                          consecutive: consecutive,
+                        ),
+                        _TimelineConnector(active: nivel >= 3),
+                        _LevelCard(
+                          level: 3,
+                          title: 'Nivel 3 — Habla espontánea',
+                          nivelActual: nivel,
+                          consecutive: consecutive,
+                        ),
+                        const SizedBox(height: 32),
+                      ],
                     ),
-                    _TimelineConnector(active: nivel >= 3),
-                    _LevelCard(
-                      level: 3,
-                      title: 'Nivel 3 — Habla espontánea',
-                      nivelActual: nivel,
-                      consecutive: consecutive,
-                    ),
-                    const SizedBox(height: 32),
-                  ],
-                ),
+                  );
+                },
               ),
             ),
           ],

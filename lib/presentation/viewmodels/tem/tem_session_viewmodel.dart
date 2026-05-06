@@ -241,6 +241,7 @@ class TemSessionViewModel extends ChangeNotifier {
       // Verificar progresión de nivel: 5 sesiones consecutivas con ≥90%
       consecutiveHighSessions = await repository.countConsecutiveHighSessions(
         uid,
+        nivel: nivelActual,
       );
       if (consecutiveHighSessions >= 5 && nivelActual < 3) {
         nivelActual++;

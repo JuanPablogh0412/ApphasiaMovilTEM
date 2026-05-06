@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -45,6 +46,11 @@ class _TemHomeScreenState extends State<TemHomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadData();
       await _narration.init();
+      // Warm-up Cloud Run para evitar cold-start en el primer ejercicio
+      // ignore: unawaited_futures
+      Dio()
+          .get('https://backend-tem-835895355070.us-central1.run.app/health')
+          .then((_) {}, onError: (_) {});
       await _narration.speakAndWait('home_bienvenida');
       if (!mounted) return;
       final tourSeen = await temTourAlreadySeen();
@@ -94,14 +100,18 @@ class _TemHomeScreenState extends State<TemHomeScreen> {
     await _narration.stop();
     if (!mounted) return;
     // Navegar a Pre-Session en vez de empezar directo
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChangeNotifierProvider.value(
-          value: vm,
-          child: TemPreSessionScreen(narration: _narration),
-        ),
-      ),
-    );
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => ChangeNotifierProvider.value(
+              value: vm,
+              child: TemPreSessionScreen(narration: _narration),
+            ),
+          ),
+        )
+        .then((_) {
+          if (mounted) _loadData();
+        });
   }
 
   void _showCalibrationRequired() {
@@ -164,7 +174,13 @@ class _TemHomeScreenState extends State<TemHomeScreen> {
                         builder: (_) =>
                             TemCalibrationScreen(narration: _narration),
                       ),
-                    ).then((_) => _loadData());
+                    ).then((result) {
+                      if (result == true) {
+                        if (mounted) setState(() => _isCalibrated = true);
+                      } else {
+                        _loadData();
+                      }
+                    });
                   },
                   icon: const Icon(Icons.mic_rounded, size: 28),
                   label: const Text(
@@ -328,16 +344,9 @@ class _TemHomeScreenState extends State<TemHomeScreen> {
                                       label: 'Progreso',
                                       color: const Color(0xFF81C784),
                                       onTap: () {
-                                        final vm = context
-                                            .read<TemSessionViewModel>();
                                         Navigator.pushNamed(
                                           context,
                                           '/tem-history',
-                                          arguments: {
-                                            'nivel': vm.nivelActual,
-                                            'consecutive':
-                                                vm.consecutiveHighSessions,
-                                          },
                                         );
                                       },
                                     ),

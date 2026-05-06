@@ -714,7 +714,7 @@ class _TemExerciseScreenState extends State<TemExerciseScreen> {
       final snapshot = await doc
           .snapshots()
           .firstWhere((s) => s.data()?['status'] != 'pending_analysis')
-          .timeout(const Duration(seconds: 45));
+          .timeout(const Duration(seconds: 90));
       final status = snapshot.data()?['status'] as String?;
       final clinicalScore = snapshot.data()?['clinical_score'] as int? ?? 0;
       final isIntelligible =

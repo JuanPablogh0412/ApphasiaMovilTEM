@@ -18,6 +18,16 @@
       ]
     },
     {
+      "collectionGroup": "sesiones_TEM",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pacienteId",  "order": "ASCENDING" },
+        { "fieldPath": "nivel",       "order": "ASCENDING" },
+        { "fieldPath": "status",      "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "exercises",
       "queryScope": "COLLECTION",
       "fields": [

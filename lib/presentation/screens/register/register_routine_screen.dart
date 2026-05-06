@@ -24,7 +24,10 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   bool _isLoading = false;
   bool _showConfirmation = false;
   bool _isListening = false;
+  bool _userStopped = false;
   bool _bannerVisible = true;
+  String _confirmedText = '';
+  String _lastPartial = '';
 
   // Claves para el spotlight del tour
   final GlobalKey _iaCardKey = GlobalKey();
@@ -97,7 +100,10 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   Future<void> _initSpeech() async {
     var status = await Permission.microphone.request();
     if (status.isGranted) {
-      await _speech.initialize();
+      await _speech.initialize(
+        onStatus: _onSpeechStatus,
+        onError: (err) => debugPrint('STT error: ${err.errorMsg}'),
+      );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -109,20 +115,62 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
     }
   }
 
+  void _onSpeechStatus(String status) {
+    if (!mounted) return;
+    if (status == 'notListening' && _isListening && !_userStopped) {
+      if (_lastPartial.isNotEmpty) {
+        _confirmedText = _confirmedText.isEmpty
+            ? _lastPartial
+            : '$_confirmedText $_lastPartial';
+        _lastPartial = '';
+      }
+      _speech.listen(
+        localeId: 'es_ES',
+        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(minutes: 3),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: false,
+        ),
+        onResult: (result) {
+          _lastPartial = result.recognizedWords;
+          final full = _confirmedText.isEmpty
+              ? result.recognizedWords
+              : '$_confirmedText ${result.recognizedWords}';
+          setState(() => _infoIA.text = full);
+        },
+      );
+    }
+  }
+
   void _startListening() async {
     bool available = await _speech.initialize();
     if (available) {
+      _userStopped = false;
+      _confirmedText = _infoIA.text.trim();
+      _lastPartial = '';
       setState(() => _isListening = true);
       _speech.listen(
         localeId: 'es_ES',
+        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(minutes: 3),
+        listenOptions: stt.SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: false,
+        ),
         onResult: (result) {
-          setState(() => _infoIA.text = result.recognizedWords);
+          _lastPartial = result.recognizedWords;
+          final full = _confirmedText.isEmpty
+              ? result.recognizedWords
+              : '$_confirmedText ${result.recognizedWords}';
+          setState(() => _infoIA.text = full);
         },
       );
     }
   }
 
   void _stopListening() async {
+    _userStopped = true;
     await _speech.stop();
     setState(() => _isListening = false);
   }
