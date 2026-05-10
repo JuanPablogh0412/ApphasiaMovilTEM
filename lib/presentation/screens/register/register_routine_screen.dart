@@ -24,10 +24,11 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   bool _isLoading = false;
   bool _showConfirmation = false;
   bool _isListening = false;
-  bool _userStopped = false;
   bool _bannerVisible = true;
+  bool _doListenScheduled = false;
   String _confirmedText = '';
-  String _lastPartial = '';
+  String _currentPartial = '';
+  int _sttSession = 0;
 
   // Claves para el spotlight del tour
   final GlobalKey _iaCardKey = GlobalKey();
@@ -102,8 +103,11 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
     if (status.isGranted) {
       await _speech.initialize(
         onStatus: _onSpeechStatus,
-        onError: (err) => debugPrint('STT error: ${err.errorMsg}'),
+        onError: (err) => debugPrint(
+          '[STT-ERROR] ${err.errorMsg} permanent=${err.permanent}',
+        ),
       );
+      _speech.statusListener = _onSpeechStatus;
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -116,63 +120,85 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   }
 
   void _onSpeechStatus(String status) {
+    debugPrint(
+      '[STT-STATUS] status="$status" isListening=$_isListening session=$_sttSession scheduled=$_doListenScheduled',
+    );
     if (!mounted) return;
-    if (status == 'notListening' && _isListening && !_userStopped) {
-      if (_lastPartial.isNotEmpty) {
-        _confirmedText = _confirmedText.isEmpty
-            ? _lastPartial
-            : '$_confirmedText $_lastPartial';
-        _lastPartial = '';
-      }
-      _speech.listen(
-        localeId: 'es_ES',
-        pauseFor: const Duration(seconds: 5),
-        listenFor: const Duration(minutes: 3),
-        listenOptions: stt.SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: false,
-        ),
-        onResult: (result) {
-          _lastPartial = result.recognizedWords;
-          final full = _confirmedText.isEmpty
-              ? result.recognizedWords
-              : '$_confirmedText ${result.recognizedWords}';
-          setState(() => _infoIA.text = full);
-        },
-      );
+    if ((status == 'notListening' || status == 'done') &&
+        _isListening &&
+        !_doListenScheduled) {
+      _doListenScheduled = true;
+      Future.delayed(const Duration(milliseconds: 300), () {
+        _doListenScheduled = false;
+        if (_isListening) _doListen();
+      });
     }
+  }
+
+  void _doListen() {
+    if (!mounted || !_isListening) return;
+    final mySession = ++_sttSession;
+    debugPrint(
+      '[STT-LISTEN] iniciando sesión $mySession confirmedText="$_confirmedText"',
+    );
+    _speech.listen(
+      localeId: 'es_ES',
+      pauseFor: const Duration(seconds: 30),
+      listenFor: const Duration(minutes: 60),
+      listenOptions: stt.SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: false,
+      ),
+      onResult: (result) {
+        debugPrint(
+          '[STT-RESULT] session=$mySession/cur=$_sttSession final=${result.finalResult} words="${result.recognizedWords}"',
+        );
+        if (!mounted || mySession != _sttSession) {
+          debugPrint(
+            '[STT-RESULT] ⚠️ callback obsoleto ignorado sesión $mySession vs $_sttSession',
+          );
+          return;
+        }
+        if (result.finalResult) {
+          if (result.recognizedWords.isNotEmpty) {
+            _confirmedText = _confirmedText.isEmpty
+                ? result.recognizedWords
+                : '$_confirmedText ${result.recognizedWords}';
+          }
+          _currentPartial = '';
+        } else {
+          _currentPartial = result.recognizedWords;
+        }
+        final display = _confirmedText.isEmpty
+            ? _currentPartial
+            : _currentPartial.isEmpty
+            ? _confirmedText
+            : '$_confirmedText $_currentPartial';
+        setState(() => _infoIA.text = display);
+      },
+    );
   }
 
   void _startListening() async {
     bool available = await _speech.initialize();
     if (available) {
-      _userStopped = false;
+      _speech.statusListener = _onSpeechStatus;
       _confirmedText = _infoIA.text.trim();
-      _lastPartial = '';
-      setState(() => _isListening = true);
-      _speech.listen(
-        localeId: 'es_ES',
-        pauseFor: const Duration(seconds: 5),
-        listenFor: const Duration(minutes: 3),
-        listenOptions: stt.SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: false,
-        ),
-        onResult: (result) {
-          _lastPartial = result.recognizedWords;
-          final full = _confirmedText.isEmpty
-              ? result.recognizedWords
-              : '$_confirmedText ${result.recognizedWords}';
-          setState(() => _infoIA.text = full);
-        },
-      );
+      _currentPartial = '';
+      _isListening = true;
+      setState(() {});
+      debugPrint('[STT-START] confirmedText="$_confirmedText"');
+      _doListen();
     }
   }
 
-  void _stopListening() async {
-    _userStopped = true;
-    await _speech.stop();
-    setState(() => _isListening = false);
+  void _stopListening() {
+    debugPrint('[STT-STOP] invalidando sesión $_sttSession');
+    _isListening = false;
+    _doListenScheduled = false;
+    ++_sttSession;
+    setState(() {});
+    _speech.stop();
   }
 
   Future<void> _processWithIA(String text, String userId) async {
