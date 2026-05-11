@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -99,6 +100,16 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
   }
 
   Future<void> _initSpeech() async {
+    if (kIsWeb) {
+      await _speech.initialize(
+        onStatus: _onSpeechStatus,
+        onError: (err) => debugPrint(
+          '[STT-ERROR] ${err.errorMsg} permanent=${err.permanent}',
+        ),
+      );
+      _speech.statusListener = _onSpeechStatus;
+      return;
+    }
     var status = await Permission.microphone.request();
     if (status.isGranted) {
       await _speech.initialize(
@@ -124,7 +135,8 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
       '[STT-STATUS] status="$status" isListening=$_isListening session=$_sttSession scheduled=$_doListenScheduled',
     );
     if (!mounted) return;
-    if ((status == 'notListening' || status == 'done') &&
+    if (!kIsWeb &&
+        (status == 'notListening' || status == 'done') &&
         _isListening &&
         !_doListenScheduled) {
       _doListenScheduled = true;
@@ -153,7 +165,7 @@ class _RegisterRoutineScreenState extends State<RegisterRoutineScreen> {
         debugPrint(
           '[STT-RESULT] session=$mySession/cur=$_sttSession final=${result.finalResult} words="${result.recognizedWords}"',
         );
-        if (!mounted || mySession != _sttSession) {
+        if (!mounted || (!kIsWeb && mySession != _sttSession)) {
           debugPrint(
             '[STT-RESULT] ⚠️ callback obsoleto ignorado sesión $mySession vs $_sttSession',
           );

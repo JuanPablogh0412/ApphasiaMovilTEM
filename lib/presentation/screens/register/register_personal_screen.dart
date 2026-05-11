@@ -1,4 +1,5 @@
 import 'package:aphasia_mobile/presentation/screens/register/register_viewmodel.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -113,6 +114,16 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
   }
 
   Future<void> _initSpeech() async {
+    if (kIsWeb) {
+      // En web, el navegador gestiona el permiso del micrófono directamente
+      await _speech.initialize(
+        onStatus: _onSpeechStatus,
+        onError: (err) => debugPrint(
+          '[STT-ERROR] ${err.errorMsg} permanent=${err.permanent}',
+        ),
+      );
+      return;
+    }
     var status = await Permission.microphone.request();
     if (status.isGranted) {
       await _speech.initialize(
@@ -137,7 +148,10 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
       '[STT-STATUS] status="$status" isListening=$_isListening session=$_sttSession scheduled=$_doListenScheduled',
     );
     if (!mounted) return;
-    if ((status == 'notListening' || status == 'done') &&
+    // En web, el modo continuous=true del navegador mantiene el micrófono abierto;
+    // solo se necesita reinicio automático en móvil (Android detiene después del silencio)
+    if (!kIsWeb &&
+        (status == 'notListening' || status == 'done') &&
         _isListening &&
         !_doListenScheduled) {
       _doListenScheduled = true;
@@ -166,7 +180,8 @@ class _RegisterPersonalScreenState extends State<RegisterPersonalScreen> {
         debugPrint(
           '[STT-RESULT] session=$mySession/cur=$_sttSession final=${result.finalResult} words="${result.recognizedWords}"',
         );
-        if (!mounted || mySession != _sttSession) {
+        // En web no se invalidan sesiones (continuous=true; no hay reinicios)
+        if (!mounted || (!kIsWeb && mySession != _sttSession)) {
           debugPrint(
             '[STT-RESULT] ⚠️ callback obsoleto ignorado sesión $mySession vs $_sttSession',
           );
